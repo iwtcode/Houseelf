@@ -247,8 +247,8 @@ fun TodayScreen(
                 all.isEmpty() -> "На сегодня дел нет. Расскажи мне про них — внесу в календарь."
                 todays.isEmpty() -> "На сегодня всё чисто. Завтра уже есть планы."
                 active == null -> "Всё сделано. Так держать!"
-                left == 1 -> "Осталось одно дело. Начнём с «${active?.title}»?"
-                else -> "Осталось ${dealsLeft(left)}. Начнём с «${active?.title}»?"
+                left == 1 -> "Осталось одно дело. Начнём с «${active.title}»?"
+                else -> "Осталось ${dealsLeft(left)}. Начнём с «${active.title}»?"
             }
             Row(
                 Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 18.dp),
