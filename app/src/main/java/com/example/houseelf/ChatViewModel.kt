@@ -17,7 +17,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-enum class Phase { Checking, NoModel, Downloading, Importing, Loading, Chat, Error }
+enum class Phase { Checking, Library, Downloading, Importing, Loading, Chat, Error }
 
 data class ChatMessage(val id: Long, val fromUser: Boolean, val text: String)
 
@@ -30,6 +30,12 @@ data class UiState(
     val messages: List<ChatMessage> = emptyList(),
     val generating: Boolean = false,
     val backend: String = "",
+    /** Все модели, лежащие на телефоне. */
+    val models: List<ModelInfo> = emptyList(),
+    /** Файл модели, которая сейчас загружена в движок (null — никакая). */
+    val activeModel: String? = null,
+    /** Файл модели, которая загружается прямо сейчас. */
+    val loadingModel: String? = null,
 )
 
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
@@ -42,14 +48,69 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private var engine: Engine? = null
     private var conversation: Conversation? = null
     private var setupJob: Job? = null // скачивание или импорт
+    private var loadJob: Job? = null // загрузка модели в движок
+    private var targetModel: String? = null // модель, которую грузим (для «Повторить»)
     private var generateJob: Job? = null
     private var nextId = 0L
 
     init {
+        val models = storage.listModels()
         when {
-            storage.isModelReady() -> loadEngine()
             storage.hasPendingDownload() -> watchDownload() // приложение перезапустили во время скачивания
-            else -> _state.update { it.copy(phase = Phase.NoModel) }
+            else -> {
+                // Открываем последнюю использованную модель; если выбора нет — показываем список
+                val auto = storage.lastUsedModel?.takeIf { name -> models.any { it.fileName == name } }
+                    ?: models.singleOrNull()?.fileName
+                if (auto != null) loadEngine(auto) else showLibrary()
+            }
+        }
+    }
+
+    // ───────── Библиотека моделей ─────────
+
+    private fun showLibrary(error: String? = null) {
+        _state.update {
+            it.copy(phase = Phase.Library, progress = null, error = error, models = storage.listModels())
+        }
+    }
+
+    /** Открыть список моделей. Загруженная модель и чат остаются в памяти. */
+    fun openLibrary() {
+        if (_state.value.generating) return
+        showLibrary()
+    }
+
+    /** Вернуться из списка в текущий чат (если модель загружена). */
+    fun backToChat() {
+        if (engine != null && _state.value.activeModel != null) {
+            _state.update { it.copy(phase = Phase.Chat, error = null) }
+        }
+    }
+
+    /** Выбрать модель из уже загруженных. */
+    fun selectModel(fileName: String) {
+        if (_state.value.generating) return
+        if (fileName == _state.value.activeModel && engine != null) {
+            backToChat() // эта модель уже открыта — просто возвращаемся к чату
+        } else {
+            loadEngine(fileName)
+        }
+    }
+
+    /** Удалить одну модель с телефона (только по явной просьбе пользователя). */
+    fun deleteModel(fileName: String) {
+        if (_state.value.generating) return
+        val wasActive = fileName == _state.value.activeModel
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                if (wasActive) closeEngine() // сначала освобождаем файл, потом удаляем
+                storage.deleteModel(fileName)
+            }
+            _state.update {
+                if (wasActive) it.copy(activeModel = null, messages = emptyList(), backend = "")
+                else it
+            }
+            showLibrary()
         }
     }
 
@@ -71,22 +132,21 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val s = storage.downloadStatus()
                 if (s == null) { // загрузку убрали снаружи
                     storage.cancelDownload()
-                    _state.update { it.copy(phase = Phase.NoModel) }
+                    showLibrary()
                     return@launch
                 }
                 when (s.status) {
                     DownloadManager.STATUS_SUCCESSFUL -> {
-                        storage.markReady()
-                        loadEngine()
+                        storage.finishDownload()
+                        loadEngine(ModelStorage.MODEL_FILE_NAME)
                         return@launch
                     }
                     DownloadManager.STATUS_FAILED -> {
                         storage.cancelDownload()
-                        _state.update {
-                            it.copy(phase = Phase.NoModel,
-                                error = "Не удалось скачать модель (код ${s.reason}). " +
-                                    "Проверьте сеть и свободное место, затем повторите.")
-                        }
+                        showLibrary(
+                            "Не удалось скачать модель (код ${s.reason}). " +
+                                "Проверьте сеть и свободное место, затем повторите."
+                        )
                         return@launch
                     }
                     DownloadManager.STATUS_PAUSED, DownloadManager.STATUS_PENDING ->
@@ -107,7 +167,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     progressText = "Копирую модель в память приложения…")
             }
             try {
-                storage.importFrom(uri) { done, total ->
+                val fileName = storage.importFrom(uri) { done, total ->
                     _state.update {
                         it.copy(
                             progress = if (total > 0) done.toFloat() / total else null,
@@ -115,51 +175,62 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         )
                     }
                 }
-                storage.markReady()
-                loadEngine()
+                loadEngine(fileName)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                storage.deleteModel()
-                _state.update {
-                    it.copy(phase = Phase.NoModel, error = e.message ?: "Не удалось загрузить файл")
-                }
+                showLibrary(e.message ?: "Не удалось загрузить файл")
             }
         }
     }
 
-    /** Отмена скачивания или копирования. */
+    /** Отмена скачивания или копирования. Уже загруженные модели не трогаем. */
     fun cancelSetup() {
         setupJob?.cancel()
         setupJob = null
-        storage.cancelDownload()
-        _state.update { it.copy(phase = Phase.NoModel, error = null) }
-    }
-
-    /** Удалить текущую модель и вернуться к выбору. */
-    fun changeModel() {
-        if (_state.value.generating) return
-        closeEngine()
-        storage.deleteModel()
-        _state.update { UiState(phase = Phase.NoModel) }
+        storage.cancelDownload() // удаляет только недокачанный файл, и только если скачивание шло
+        showLibrary()
     }
 
     // ───────── Движок LiteRT-LM ─────────
 
-    fun retryLoad() = loadEngine()
+    /** Повторить загрузку модели, на которой случилась ошибка. */
+    fun retryLoad() {
+        val name = targetModel
+        if (name != null) loadEngine(name) else showLibrary()
+    }
 
-    private fun loadEngine() {
-        _state.update { it.copy(phase = Phase.Loading, progress = null, error = null) }
-        viewModelScope.launch {
+    private fun loadEngine(fileName: String) {
+        if (loadJob?.isActive == true) return // уже идёт загрузка модели
+        targetModel = fileName
+        _state.update {
+            it.copy(phase = Phase.Loading, progress = null, error = null,
+                activeModel = null, loadingModel = fileName, models = storage.listModels())
+        }
+        loadJob = viewModelScope.launch {
             try {
-                val (e, backendName) = withContext(Dispatchers.Default) { createEngine() }
-                val c = withContext(Dispatchers.Default) { e.createConversation(conversationConfig()) }
+                val (e, backendName) = withContext(Dispatchers.Default) {
+                    closeEngine() // освобождаем память от предыдущей модели
+                    createEngine(fileName)
+                }
+                val c = try {
+                    withContext(Dispatchers.Default) { e.createConversation(conversationConfig()) }
+                } catch (t: Throwable) {
+                    runCatching { e.close() }
+                    throw t
+                }
                 engine = e
                 conversation = c
-                _state.update { it.copy(phase = Phase.Chat, messages = emptyList(), backend = backendName) }
+                storage.lastUsedModel = fileName
+                _state.update {
+                    it.copy(phase = Phase.Chat, messages = emptyList(), backend = backendName,
+                        activeModel = fileName, loadingModel = null)
+                }
+            } catch (ce: CancellationException) {
+                throw ce
             } catch (t: Throwable) {
                 _state.update {
-                    it.copy(phase = Phase.Error,
+                    it.copy(phase = Phase.Error, loadingModel = null,
                         error = "Не удалось загрузить модель: ${t.message ?: t.javaClass.simpleName}")
                 }
             }
@@ -167,8 +238,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Сначала GPU (быстрее и экономнее по памяти), при ошибке — CPU. */
-    private fun createEngine(): Pair<Engine, String> {
-        val path = storage.modelFile.absolutePath
+    private fun createEngine(fileName: String): Pair<Engine, String> {
+        val path = storage.modelFile(fileName).absolutePath
         val cacheDir = getApplication<Application>().cacheDir.path
 
         fun init(backend: Backend): Engine {

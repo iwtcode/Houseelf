@@ -2,6 +2,7 @@ package com.example.houseelf
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -46,15 +47,27 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel()) 
         if (uri != null) vm.importModel(uri)
     }
 
+    // Системная кнопка «Назад» в списке моделей возвращает в чат, а не закрывает приложение
+    BackHandler(enabled = state.phase == Phase.Library && state.activeModel != null) {
+        vm.backToChat()
+    }
+
     when (state.phase) {
         Phase.Checking, Phase.Loading -> LoadingScreen(
-            text = if (state.phase == Phase.Loading) "Загружаю модель в память…\nПервый запуск может занять до минуты" else "",
+            text = if (state.phase == Phase.Loading) {
+                "Открываю «${modelDisplayName(state.loadingModel)}»…\nПервый запуск может занять до минуты"
+            } else "",
             modifier = modifier,
         )
-        Phase.NoModel -> SetupScreen(
+        Phase.Library -> LibraryScreen(
+            models = state.models,
+            activeModel = state.activeModel,
             error = state.error,
+            onSelect = vm::selectModel,
+            onDelete = vm::deleteModel,
             onDownload = vm::startDownload,
             onPickFile = { filePicker.launch(arrayOf("*/*")) },
+            onBack = vm::backToChat,
             modifier = modifier,
         )
         Phase.Downloading, Phase.Importing -> ProgressScreen(
@@ -68,14 +81,14 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel()) 
         Phase.Error -> ErrorScreen(
             error = state.error.orEmpty(),
             onRetry = vm::retryLoad,
-            onChangeModel = vm::changeModel,
+            onOpenLibrary = vm::openLibrary,
             modifier = modifier,
         )
         Phase.Chat -> ChatScreen(
             state = state,
             onSend = vm::send,
             onNewChat = vm::newChat,
-            onChangeModel = vm::changeModel,
+            onOpenLibrary = vm::openLibrary,
             modifier = modifier,
         )
     }

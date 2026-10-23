@@ -10,6 +10,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
+import java.util.Locale
 
 /** Состояние системной загрузки (DownloadManager). */
 data class DownloadStatus(
@@ -19,9 +20,31 @@ data class DownloadStatus(
     val reason: Int,
 )
 
+/** Модель, лежащая на телефоне. */
+data class ModelInfo(val fileName: String, val sizeBytes: Long) {
+    val displayName: String get() = modelDisplayName(fileName)
+}
+
+/** Человекочитаемое имя модели по имени файла. */
+fun modelDisplayName(fileName: String?): String {
+    if (fileName == null) return ""
+    if (fileName == ModelStorage.MODEL_FILE_NAME) return "Gemma 4 E2B"
+    return fileName.removeSuffix(ModelStorage.MODEL_EXT)
+}
+
+fun formatSize(bytes: Long): String {
+    val gb = 1024.0 * 1024.0 * 1024.0
+    val mb = 1024.0 * 1024.0
+    return if (bytes >= gb) String.format(Locale.getDefault(), "%.1f ГБ", bytes / gb)
+    else String.format(Locale.getDefault(), "%d МБ", (bytes / mb).toLong())
+}
+
 /**
- * Всё, что связано с файлом модели: где он лежит, скачивание с Hugging Face
+ * Всё, что связано с файлами моделей: где они лежат, скачивание с Hugging Face
  * и копирование из памяти телефона.
+ *
+ * Моделей может быть несколько: любой файл *.litertlm в папке приложения
+ * считается загруженной моделью. Удаляется модель только явным действием пользователя.
  *
  * Скачивание делает системный DownloadManager: оно идёт в фоне, переживает
  * сворачивание приложения, докачивается после обрыва сети и сам показывает уведомление.
@@ -31,21 +54,37 @@ class ModelStorage(private val context: Context) {
     private val prefs = context.getSharedPreferences("model", Context.MODE_PRIVATE)
     private val downloadManager = context.getSystemService(DownloadManager::class.java)
 
-    /** Единый путь модели и для скачанного, и для импортированного файла. */
-    val modelFile: File
-        get() = File(context.getExternalFilesDir(null) ?: context.filesDir, MODEL_FILE_NAME)
+    private val modelsDir: File
+        get() = context.getExternalFilesDir(null) ?: context.filesDir
 
-    /** Модель считается готовой, только если загрузка/копирование завершились успешно. */
-    fun isModelReady(): Boolean =
-        prefs.getBoolean(KEY_READY, false) && modelFile.exists() && modelFile.length() > 0
+    fun modelFile(fileName: String): File = File(modelsDir, fileName)
 
-    fun markReady() {
-        prefs.edit().putBoolean(KEY_READY, true).remove(KEY_DOWNLOAD_ID).apply()
+    // ───────── Библиотека моделей ─────────
+
+    /** Все полностью загруженные модели. Недокачанный файл в список не попадает. */
+    fun listModels(): List<ModelInfo> {
+        val downloading = hasPendingDownload()
+        return modelsDir.listFiles().orEmpty()
+            .filter { it.isFile && it.name.endsWith(MODEL_EXT, ignoreCase = true) && it.length() > 0 }
+            // DownloadManager пишет прямо в итоговый файл, пока качает
+            .filterNot { downloading && it.name == MODEL_FILE_NAME }
+            .map { ModelInfo(it.name, it.length()) }
+            .sortedBy { it.displayName.lowercase() }
     }
 
-    fun deleteModel() {
-        prefs.edit().remove(KEY_READY).apply()
-        modelFile.delete()
+    /** Последняя успешно открытая модель — её приложение откроет при запуске. */
+    var lastUsedModel: String?
+        get() = prefs.getString(KEY_LAST_USED, null)
+        set(value) {
+            val editor = prefs.edit()
+            if (value == null) editor.remove(KEY_LAST_USED) else editor.putString(KEY_LAST_USED, value)
+            editor.apply()
+        }
+
+    /** Удаляет одну модель. Вызывается только по явной команде пользователя. */
+    fun deleteModel(fileName: String) {
+        modelFile(fileName).delete()
+        if (lastUsedModel == fileName) lastUsedModel = null
     }
 
     // ───────── Скачивание с Hugging Face ─────────
@@ -53,7 +92,7 @@ class ModelStorage(private val context: Context) {
     fun hasPendingDownload(): Boolean = prefs.contains(KEY_DOWNLOAD_ID)
 
     fun enqueueDownload() {
-        deleteModel() // DownloadManager не перезаписывает существующий файл
+        modelFile(MODEL_FILE_NAME).delete() // DownloadManager не перезаписывает существующий файл
         val request = DownloadManager.Request(MODEL_URL.toUri())
             .setTitle("Gemma 4 E2B")
             .setDescription("Загрузка модели для Домового")
@@ -78,24 +117,39 @@ class ModelStorage(private val context: Context) {
         }
     }
 
+    /** Скачивание успешно завершилось: файл теперь обычная модель в библиотеке. */
+    fun finishDownload() {
+        prefs.edit().remove(KEY_DOWNLOAD_ID).apply()
+    }
+
+    /**
+     * Отменяет текущее скачивание и удаляет недокачанный файл.
+     * Если скачивания нет — ничего не делает, чтобы случайно не задеть готовые модели.
+     */
     fun cancelDownload() {
+        if (!hasPendingDownload()) return
         val id = prefs.getLong(KEY_DOWNLOAD_ID, -1L)
         if (id >= 0) downloadManager.remove(id) // заодно удаляет недокачанный файл
         prefs.edit().remove(KEY_DOWNLOAD_ID).apply()
-        deleteModel()
+        modelFile(MODEL_FILE_NAME).delete()
     }
 
     // ───────── Загрузка из памяти телефона ─────────
 
-    /** Копирует выбранный файл в папку приложения (движку нужен обычный путь к файлу). */
-    suspend fun importFrom(uri: Uri, onProgress: (done: Long, total: Long) -> Unit) =
+    /**
+     * Копирует выбранный файл в папку приложения (движку нужен обычный путь к файлу).
+     * Файл сохраняется под своим именем, другие модели не затрагиваются.
+     * Возвращает имя сохранённого файла.
+     */
+    suspend fun importFrom(uri: Uri, onProgress: (done: Long, total: Long) -> Unit): String =
         withContext(Dispatchers.IO) {
             val (name, total) = queryNameAndSize(uri)
-            require(name == null || name.contains(".litertlm", ignoreCase = true)) {
-                "Нужен файл модели с расширением .litertlm"
+            require(name == null || name.endsWith(MODEL_EXT, ignoreCase = true)) {
+                "Нужен файл модели с расширением $MODEL_EXT"
             }
-            deleteModel()
-            val tmp = File(modelFile.parentFile, "$MODEL_FILE_NAME.tmp")
+            val fileName = name?.let(::sanitize) ?: "model-${System.currentTimeMillis()}$MODEL_EXT"
+            val target = modelFile(fileName)
+            val tmp = File(modelsDir, "$fileName.tmp")
             try {
                 val input = context.contentResolver.openInputStream(uri)
                     ?: throw IOException("Не удалось открыть выбранный файл")
@@ -117,11 +171,16 @@ class ModelStorage(private val context: Context) {
                         }
                     }
                 }
-                if (!tmp.renameTo(modelFile)) throw IOException("Не удалось сохранить файл модели")
+                // Старая модель с тем же именем заменяется только после полного копирования
+                if (!tmp.renameTo(target)) throw IOException("Не удалось сохранить файл модели")
             } finally {
                 tmp.delete() // после успешного rename файла уже нет — это безопасно
             }
+            fileName
         }
+
+    private fun sanitize(name: String): String =
+        File(name).name.replace(Regex("[\\\\/:*?\"<>|]"), "_")
 
     private fun queryNameAndSize(uri: Uri): Pair<String?, Long> {
         context.contentResolver.query(
@@ -139,11 +198,12 @@ class ModelStorage(private val context: Context) {
     }
 
     companion object {
-        const val MODEL_FILE_NAME = "gemma-4-E2B-it.litertlm"
+        const val MODEL_EXT = ".litertlm"
+        const val MODEL_FILE_NAME = "gemma-4-E2B-it$MODEL_EXT"
         const val MODEL_URL =
             "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/$MODEL_FILE_NAME"
 
-        private const val KEY_READY = "ready"
+        private const val KEY_LAST_USED = "last_used"
         private const val KEY_DOWNLOAD_ID = "download_id"
         private const val REPORT_STEP = 8L * 1024 * 1024
     }

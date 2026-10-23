@@ -10,12 +10,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
@@ -29,6 +33,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -36,50 +41,169 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 
-// ───────── Выбор источника модели ─────────
+// ───────── Библиотека моделей ─────────
 
 @Composable
-fun SetupScreen(
+fun LibraryScreen(
+    models: List<ModelInfo>,
+    activeModel: String?,
     error: String?,
+    onSelect: (String) -> Unit,
+    onDelete: (String) -> Unit,
     onDownload: () -> Unit,
     onPickFile: () -> Unit,
+    onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Column(
-        modifier = modifier.fillMaxSize().padding(24.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
+    var pendingDelete by remember { mutableStateOf<ModelInfo?>(null) }
+    val canGoBack = activeModel != null
+    val canDownload = models.none { it.fileName == ModelStorage.MODEL_FILE_NAME }
+
+    Column(modifier = modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = if (canGoBack) 4.dp else 16.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (canGoBack) {
+                TextButton(onClick = onBack) { Text("← К чату") }
+                Spacer(Modifier.width(4.dp))
+            }
+            Text("Модели", style = MaterialTheme.typography.titleLarge)
+        }
+        HorizontalDivider()
+
+        LazyColumn(
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            if (error != null) {
+                item { Text(error, color = MaterialTheme.colorScheme.error) }
+            }
+
+            if (models.isEmpty()) {
+                item {
+                    Column(Modifier.fillMaxWidth().padding(vertical = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("Карманный домовой", style = MaterialTheme.typography.headlineMedium)
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            "Для чата нужна модель, например Gemma 4 E2B (около 2,6 ГБ). " +
+                                "Она хранится на телефоне, а сам чат работает без интернета.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            textAlign = TextAlign.Center,
+                        )
+                    }
+                }
+            } else {
+                item {
+                    Column {
+                        Text("Загружены на телефоне", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "Нажмите на модель, чтобы открыть чат с ней",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+                items(models, key = { it.fileName }) { model ->
+                    ModelCard(
+                        model = model,
+                        isActive = model.fileName == activeModel,
+                        onClick = { onSelect(model.fileName) },
+                        onDelete = { pendingDelete = model },
+                    )
+                }
+            }
+
+            item {
+                Text(
+                    if (models.isEmpty()) "Как получить модель" else "Добавить ещё модель",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+            if (canDownload) {
+                item {
+                    Column(Modifier.fillMaxWidth()) {
+                        Button(onClick = onDownload, modifier = Modifier.fillMaxWidth()) {
+                            Text("Скачать Gemma 4 E2B с Hugging Face")
+                        }
+                        Text(
+                            "Около 2,6 ГБ, лучше по Wi-Fi",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
+                }
+            }
+            item {
+                Column(Modifier.fillMaxWidth()) {
+                    OutlinedButton(onClick = onPickFile, modifier = Modifier.fillMaxWidth()) {
+                        Text("Загрузить из памяти телефона")
+                    }
+                    Text(
+                        "Выберите файл модели с расширением ${ModelStorage.MODEL_EXT}",
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+            }
+        }
+    }
+
+    pendingDelete?.let { model ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("Удалить модель?") },
+            text = {
+                Text(
+                    "«${model.displayName}» (${formatSize(model.sizeBytes)}) будет удалена с телефона. " +
+                        (if (model.fileName == activeModel) "Текущий чат закроется. " else "") +
+                        "Чтобы пользоваться ей снова, её нужно будет скачать или загрузить заново."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDelete(model.fileName)
+                    pendingDelete = null
+                }) { Text("Удалить", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) { Text("Отмена") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun ModelCard(
+    model: ModelInfo,
+    isActive: Boolean,
+    onClick: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Card(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isActive) MaterialTheme.colorScheme.primaryContainer
+            else MaterialTheme.colorScheme.surfaceVariant,
+        ),
     ) {
-        Text("Карманный домовой", style = MaterialTheme.typography.headlineMedium)
-        Spacer(Modifier.height(12.dp))
-        Text(
-            "Для чата нужна модель Gemma 4 E2B (около 2,6 ГБ). " +
-                "Она хранится на телефоне, а сам чат работает без интернета.",
-            style = MaterialTheme.typography.bodyMedium,
-            textAlign = TextAlign.Center,
-        )
-        if (error != null) {
-            Spacer(Modifier.height(16.dp))
-            Text(error, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(model.displayName, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    formatSize(model.sizeBytes) + if (isActive) " · сейчас открыта" else "",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            TextButton(onClick = onDelete) {
+                Text("Удалить", color = MaterialTheme.colorScheme.error)
+            }
         }
-        Spacer(Modifier.height(32.dp))
-        Button(onClick = onDownload, modifier = Modifier.fillMaxWidth()) {
-            Text("Скачать с Hugging Face")
-        }
-        Text(
-            "Лучше по Wi-Fi",
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.padding(top = 4.dp),
-        )
-        Spacer(Modifier.height(16.dp))
-        OutlinedButton(onClick = onPickFile, modifier = Modifier.fillMaxWidth()) {
-            Text("Загрузить из памяти телефона")
-        }
-        Text(
-            "Выберите файл ${ModelStorage.MODEL_FILE_NAME}",
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.padding(top = 4.dp),
-        )
     }
 }
 
@@ -134,7 +258,7 @@ fun LoadingScreen(text: String, modifier: Modifier = Modifier) {
 fun ErrorScreen(
     error: String,
     onRetry: () -> Unit,
-    onChangeModel: () -> Unit,
+    onOpenLibrary: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -146,8 +270,8 @@ fun ErrorScreen(
         Spacer(Modifier.height(24.dp))
         Button(onClick = onRetry, modifier = Modifier.fillMaxWidth()) { Text("Повторить") }
         Spacer(Modifier.height(8.dp))
-        OutlinedButton(onClick = onChangeModel, modifier = Modifier.fillMaxWidth()) {
-            Text("Удалить и выбрать другую модель")
+        OutlinedButton(onClick = onOpenLibrary, modifier = Modifier.fillMaxWidth()) {
+            Text("Выбрать другую модель")
         }
     }
 }
@@ -159,7 +283,7 @@ fun ChatScreen(
     state: UiState,
     onSend: (String) -> Unit,
     onNewChat: () -> Unit,
-    onChangeModel: () -> Unit,
+    onOpenLibrary: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var input by rememberSaveable { mutableStateOf("") }
@@ -178,10 +302,10 @@ fun ChatScreen(
         ) {
             Column(Modifier.weight(1f)) {
                 Text("Домовой", style = MaterialTheme.typography.titleLarge)
-                Text("Gemma 4 E2B · ${state.backend}", style = MaterialTheme.typography.bodySmall)
+                Text("${modelDisplayName(state.activeModel)} · ${state.backend}", style = MaterialTheme.typography.bodySmall)
             }
             TextButton(onClick = onNewChat, enabled = !state.generating) { Text("Новый чат") }
-            TextButton(onClick = onChangeModel, enabled = !state.generating) { Text("Модель") }
+            TextButton(onClick = onOpenLibrary, enabled = !state.generating) { Text("Модели") }
         }
         HorizontalDivider()
 
