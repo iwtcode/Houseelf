@@ -4,12 +4,14 @@ import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color as AndroidColor
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.activity.result.PickVisualMediaRequest
@@ -23,10 +25,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.houseelf.ui.theme.Duo
 import com.example.houseelf.ui.theme.HouseelfTheme
 
 class MainActivity : ComponentActivity() {
@@ -34,10 +42,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        // Тема приложения всегда светлая, поэтому и значки в системных панелях всегда тёмные
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.light(AndroidColor.TRANSPARENT, AndroidColor.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.light(AndroidColor.TRANSPARENT, AndroidColor.TRANSPARENT),
+        )
         setContent {
             HouseelfTheme {
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
+                Scaffold(modifier = Modifier.fillMaxSize(), containerColor = Duo.Bg) { innerPadding ->
                     HouseelfApp(
                         modifier = Modifier
                             .padding(innerPadding)
@@ -61,6 +73,11 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel()) {
     val state by vm.state.collectAsState()
+
+    // «Сегодня» — домашний экран: открывается вместо чата, пока человек сам не зашёл в «Домовой»
+    var showToday by rememberSaveable { mutableStateOf(true) }
+    // Меняется, когда пользователь ответил на запрос календаря на экране «Сегодня»
+    var calendarTick by remember { mutableIntStateOf(0) }
 
     // Системный выбор файла. Тип */*: у .litertlm нет собственного MIME-типа.
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -116,6 +133,9 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel()) 
             calendarPermission.launch(CALENDAR_PERMISSIONS)
         }
     }
+    val todayCalendarPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        calendarTick++
+    }
     val openIntent = { intent: Intent ->
         try {
             context.startActivity(intent)
@@ -134,6 +154,10 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel()) 
     BackHandler(enabled = state.phase == Phase.Library && state.activeModel != null) {
         vm.backToChat()
     }
+    // Из чата «Назад» ведёт на «Сегодня»
+    BackHandler(enabled = state.phase == Phase.Chat && !showToday) {
+        showToday = true
+    }
 
     when (state.phase) {
         Phase.Checking, Phase.Loading -> LoadingScreen(
@@ -151,7 +175,10 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel()) 
             autoLoad = state.autoLoad,
             confirmActions = state.confirmActions,
             chatHasMessages = state.messages.isNotEmpty(),
-            onSelect = vm::selectModel,
+            onSelect = { fileName ->
+                showToday = false
+                vm.selectModel(fileName)
+            },
             onUnload = vm::unloadModel,
             onAutoLoadChange = vm::setAutoLoad,
             onConfirmActionsChange = vm::setConfirmActions,
@@ -177,22 +204,36 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel()) 
             onOpenLibrary = vm::openLibrary,
             modifier = modifier,
         )
-        Phase.Chat -> ChatScreen(
-            state = state,
-            onSend = vm::send,
-            onNewChat = vm::newChat,
-            onOpenLibrary = vm::openLibrary,
-            onPickImages = {
-                imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-            },
-            onPickAudio = { audioPicker.launch(arrayOf("audio/*")) },
-            onStartRecording = onMic,
-            onStopRecording = { vm.stopRecording(discard = false) },
-            onCancelRecording = { vm.stopRecording(discard = true) },
-            onRemoveAttachment = vm::removeAttachment,
-            eventActions = eventActions,
-            modifier = modifier,
-        )
+        Phase.Chat -> if (showToday) {
+            TodayScreen(
+                calendarGranted = remember(calendarTick) { hasCalendarPermission(context) },
+                // Событие, добавленное из чата, сразу появляется на пути дня
+                refreshKey = calendarTick + state.messages.sumOf { m -> m.events.count { it.status == EventStatus.Added } },
+                onRequestCalendar = { todayCalendarPermission.launch(CALENDAR_PERMISSIONS) },
+                onOpenChat = { showToday = false },
+                onOpenLibrary = vm::openLibrary,
+                onOpenEvent = { id -> openIntent(calendarViewIntent(id)) },
+                modifier = modifier,
+            )
+        } else {
+            ChatScreen(
+                state = state,
+                onSend = vm::send,
+                onNewChat = vm::newChat,
+                onOpenLibrary = vm::openLibrary,
+                onBack = { showToday = true },
+                onPickImages = {
+                    imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                },
+                onPickAudio = { audioPicker.launch(arrayOf("audio/*")) },
+                onStartRecording = onMic,
+                onStopRecording = { vm.stopRecording(discard = false) },
+                onCancelRecording = { vm.stopRecording(discard = true) },
+                onRemoveAttachment = vm::removeAttachment,
+                eventActions = eventActions,
+                modifier = modifier,
+            )
+        }
     }
 
     if (state.askNetworkChoice) {

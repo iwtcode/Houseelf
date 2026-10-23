@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.Houseelf" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.Houseelf" parent="android:Theme.Material.Light.NoActionBar">
+        <!-- Тот же фон, что у экранов: при запуске нет белой вспышки -->
+        <item name="android:windowBackground">#FFF4F7F6</item>
+    </style>
 </resources>

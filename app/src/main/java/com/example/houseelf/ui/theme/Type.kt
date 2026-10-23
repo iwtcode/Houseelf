@@ -6,29 +6,22 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
-// Set of Material typography styles to start with
+/**
+ * В макете — Nunito. Чтобы подключить её, положите Nunito в res/font и замените значение:
+ * FontFamily(Font(R.font.nunito_bold, FontWeight.Bold), Font(R.font.nunito_black, FontWeight.Black)).
+ */
+val DuoFont: FontFamily = FontFamily.Default
+
+// Плотные веса — часть характера интерфейса: заголовки Black, основной текст Bold.
 val Typography = Typography(
-    bodyLarge = TextStyle(
-        fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.Normal,
-        fontSize = 16.sp,
-        lineHeight = 24.sp,
-        letterSpacing = 0.5.sp
-    )
-    /* Other default text styles to override
-    titleLarge = TextStyle(
-        fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.Normal,
-        fontSize = 22.sp,
-        lineHeight = 28.sp,
-        letterSpacing = 0.sp
-    ),
-    labelSmall = TextStyle(
-        fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.Medium,
-        fontSize = 11.sp,
-        lineHeight = 16.sp,
-        letterSpacing = 0.5.sp
-    )
-    */
+    headlineMedium = TextStyle(fontFamily = DuoFont, fontWeight = FontWeight.Black, fontSize = 26.sp, lineHeight = 32.sp),
+    titleLarge = TextStyle(fontFamily = DuoFont, fontWeight = FontWeight.Black, fontSize = 22.sp, lineHeight = 28.sp),
+    titleMedium = TextStyle(fontFamily = DuoFont, fontWeight = FontWeight.Black, fontSize = 16.sp, lineHeight = 22.sp),
+    titleSmall = TextStyle(fontFamily = DuoFont, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp, lineHeight = 20.sp),
+    bodyLarge = TextStyle(fontFamily = DuoFont, fontWeight = FontWeight.Bold, fontSize = 15.sp, lineHeight = 21.sp),
+    bodyMedium = TextStyle(fontFamily = DuoFont, fontWeight = FontWeight.Bold, fontSize = 14.sp, lineHeight = 20.sp),
+    bodySmall = TextStyle(fontFamily = DuoFont, fontWeight = FontWeight.Bold, fontSize = 13.sp, lineHeight = 18.sp),
+    labelLarge = TextStyle(fontFamily = DuoFont, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp, lineHeight = 20.sp),
+    labelMedium = TextStyle(fontFamily = DuoFont, fontWeight = FontWeight.ExtraBold, fontSize = 12.sp, lineHeight = 16.sp),
+    labelSmall = TextStyle(fontFamily = DuoFont, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp, lineHeight = 14.sp),
 )
