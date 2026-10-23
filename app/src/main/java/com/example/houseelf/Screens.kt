@@ -69,10 +69,12 @@ fun LibraryScreen(
     freeRamBytes: Long,
     totalRamBytes: Long,
     autoLoad: Boolean,
+    confirmActions: Boolean,
     chatHasMessages: Boolean,
     onSelect: (String) -> Unit,
     onUnload: () -> Unit,
     onAutoLoadChange: (Boolean) -> Unit,
+    onConfirmActionsChange: (Boolean) -> Unit,
     onDelete: (String) -> Unit,
     onDownload: () -> Unit,
     onPickFile: () -> Unit,
@@ -163,6 +165,23 @@ fun LibraryScreen(
                         }
                         Spacer(Modifier.width(12.dp))
                         Switch(checked = autoLoad, onCheckedChange = onAutoLoadChange)
+                    }
+                }
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Подтверждать действия модели", style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                "Выключено: модель сама вносит события в календарь. " +
+                                    "Включено: сначала покажет карточку с кнопками «Добавить» и «Отклонить».",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Switch(checked = confirmActions, onCheckedChange = onConfirmActionsChange)
                     }
                 }
             }
@@ -385,6 +404,16 @@ fun ErrorScreen(
 
 // ───────── Чат ─────────
 
+/** Что можно сделать с карточкой события в чате. */
+class EventActions(
+    val onConfirm: (Long) -> Unit,
+    val onDismiss: (Long) -> Unit,
+    /** Запасной путь: открыть форму события в приложении календаря. */
+    val onOpenForm: (EventProposal) -> Unit,
+    /** Открыть уже созданное событие. */
+    val onView: (Long) -> Unit,
+)
+
 @Composable
 fun ChatScreen(
     state: UiState,
@@ -397,6 +426,7 @@ fun ChatScreen(
     onStopRecording: () -> Unit,
     onCancelRecording: () -> Unit,
     onRemoveAttachment: (Long) -> Unit,
+    eventActions: EventActions,
     modifier: Modifier = Modifier,
 ) {
     var input by rememberSaveable { mutableStateOf("") }
@@ -438,7 +468,7 @@ fun ChatScreen(
                 contentPadding = PaddingValues(12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                items(state.messages.asReversed(), key = { it.id }) { MessageBubble(it) }
+                items(state.messages.asReversed(), key = { it.id }) { MessageBubble(it, eventActions) }
             }
         }
 
@@ -638,7 +668,7 @@ private fun AudioChip(att: AudioAttachment, onRemove: (() -> Unit)? = null) {
 }
 
 @Composable
-private fun MessageBubble(message: ChatMessage) {
+private fun MessageBubble(message: ChatMessage, eventActions: EventActions) {
     val images = message.attachments.filterIsInstance<ImageAttachment>()
     val audios = message.attachments.filterIsInstance<AudioAttachment>()
     Row(
@@ -669,6 +699,52 @@ private fun MessageBubble(message: ChatMessage) {
                         style = MaterialTheme.typography.bodyLarge,
                     )
                 }
+                message.events.forEach { EventCard(it, eventActions) }
+            }
+        }
+    }
+}
+
+/** Карточка события, которое модель вносит в календарь. */
+@Composable
+private fun EventCard(ev: EventProposal, actions: EventActions) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 2.dp,
+    ) {
+        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text("📅 ${ev.title}", style = MaterialTheme.typography.titleSmall)
+            Text(formatEventWhen(ev), style = MaterialTheme.typography.bodyMedium)
+            if (ev.location != null) Text("📍 ${ev.location}", style = MaterialTheme.typography.bodySmall)
+            if (ev.description != null) Text(ev.description, style = MaterialTheme.typography.bodySmall)
+
+            when (ev.status) {
+                EventStatus.Pending -> Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { actions.onConfirm(ev.id) }) { Text("Добавить") }
+                    OutlinedButton(onClick = { actions.onDismiss(ev.id) }) { Text("Отклонить") }
+                }
+                EventStatus.NeedsPermission ->
+                    Text("Жду разрешение на доступ к календарю…", style = MaterialTheme.typography.bodySmall)
+                EventStatus.Added -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("✓ Добавлено в календарь", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                    if (ev.calendarEventId != null) {
+                        TextButton(onClick = { actions.onView(ev.calendarEventId) }) { Text("Открыть") }
+                    }
+                }
+                EventStatus.Failed -> Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        "Не удалось добавить: ${ev.error ?: "неизвестная ошибка"}",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = { actions.onConfirm(ev.id) }) { Text("Повторить") }
+                        TextButton(onClick = { actions.onOpenForm(ev) }) { Text("Открыть в календаре") }
+                    }
+                }
+                EventStatus.Dismissed ->
+                    Text("Отклонено", style = MaterialTheme.typography.bodySmall)
             }
         }
     }

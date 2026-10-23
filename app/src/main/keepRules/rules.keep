@@ -13,3 +13,7 @@
 
 # LiteRT-LM вызывает классы из нативного кода (JNI) — R8 не должен их переименовывать/удалять
 -keep class com.google.ai.edge.litertlm.** { *; }
+
+# Инструменты модели ищутся через рефлексию по аннотациям @Tool / @ToolParam
+-keepattributes *Annotation*
+-keep class com.example.houseelf.CalendarTools { *; }

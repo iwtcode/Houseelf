@@ -1,6 +1,8 @@
 package com.example.houseelf
 
 import android.Manifest
+import android.content.ActivityNotFoundException
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -18,6 +20,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -103,6 +106,30 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel()) 
         }
     }
 
+    // Календарь: модель сама вносит события, поэтому разрешение запрашиваем в момент первого обращения
+    val calendarPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        vm.onCalendarPermissionResult()
+    }
+    LaunchedEffect(state.needCalendarPermission) {
+        if (state.needCalendarPermission) {
+            vm.calendarPermissionRequested()
+            calendarPermission.launch(CALENDAR_PERMISSIONS)
+        }
+    }
+    val openIntent = { intent: Intent ->
+        try {
+            context.startActivity(intent)
+        } catch (_: ActivityNotFoundException) {
+            vm.showNotice("Не найдено приложение календаря")
+        }
+    }
+    val eventActions = EventActions(
+        onConfirm = vm::confirmEvent,
+        onDismiss = vm::dismissEvent,
+        onOpenForm = { ev -> openIntent(calendarInsertIntent(ev)) },
+        onView = { id -> openIntent(calendarViewIntent(id)) },
+    )
+
     // Системная кнопка «Назад» в списке моделей возвращает в чат, а не закрывает приложение
     BackHandler(enabled = state.phase == Phase.Library && state.activeModel != null) {
         vm.backToChat()
@@ -122,10 +149,12 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel()) 
             freeRamBytes = state.freeRamBytes,
             totalRamBytes = state.totalRamBytes,
             autoLoad = state.autoLoad,
+            confirmActions = state.confirmActions,
             chatHasMessages = state.messages.isNotEmpty(),
             onSelect = vm::selectModel,
             onUnload = vm::unloadModel,
             onAutoLoadChange = vm::setAutoLoad,
+            onConfirmActionsChange = vm::setConfirmActions,
             onDelete = vm::deleteModel,
             onDownload = onDownload,
             onPickFile = { filePicker.launch(arrayOf("*/*")) },
@@ -161,6 +190,7 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel()) 
             onStopRecording = { vm.stopRecording(discard = false) },
             onCancelRecording = { vm.stopRecording(discard = true) },
             onRemoveAttachment = vm::removeAttachment,
+            eventActions = eventActions,
             modifier = modifier,
         )
     }

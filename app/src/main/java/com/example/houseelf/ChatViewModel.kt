@@ -23,6 +23,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.max
 
 enum class Phase { Checking, Library, Downloading, Importing, Loading, Chat, Error }
@@ -32,6 +33,8 @@ data class ChatMessage(
     val fromUser: Boolean,
     val text: String,
     val attachments: List<Attachment> = emptyList(),
+    /** События, которые модель вносила в календарь в этом ответе. */
+    val events: List<EventProposal> = emptyList(),
 )
 
 data class UiState(
@@ -58,6 +61,10 @@ data class UiState(
     val totalRamBytes: Long = 0,
     /** Загружать последнюю модель в память при запуске приложения. */
     val autoLoad: Boolean = true,
+    /** Спрашивать подтверждение, прежде чем модель что-то сделает (по умолчанию — нет). */
+    val confirmActions: Boolean = false,
+    /** Нужно показать системный запрос разрешения на календарь. */
+    val needCalendarPermission: Boolean = false,
     /** Движок загружен с поддержкой изображений и звука. */
     val mediaSupported: Boolean = false,
     /** Вложения, прикреплённые к ещё не отправленному сообщению. */
@@ -86,6 +93,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private var generateJob: Job? = null
     private var nextId = 0L
     private var nextAttachmentId = 0L
+    private val nextEventId = AtomicLong(0)
+    @Volatile private var currentBotId = -1L // ответ, в который попадут карточки событий
+    @Volatile private var permissionInFlight = false // системное окно запроса разрешения уже на экране
+
+    // Инструменты, доступные модели. Вызываются из потока генерации.
+    private val calendarTools = CalendarTools(
+        nextId = { nextEventId.incrementAndGet() },
+        handler = { handleProposal(it) },
+    )
 
     // Управление записью голоса: поток записи проверяет эти флаги
     @Volatile private var recStop = false
@@ -95,7 +111,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         Media.clearAttachments(app) // файлы вложений от прошлого запуска больше не нужны
         val models = storage.listModels()
         val autoLoad = storage.autoLoadOnStart
-        _state.update { it.copy(autoLoad = autoLoad) }
+        _state.update { it.copy(autoLoad = autoLoad, confirmActions = storage.confirmActions) }
         when {
             storage.hasPendingDownload() -> { // приложение перезапустили во время скачивания
                 storage.resumeDownloadIfNeeded()
@@ -395,8 +411,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         throw lastError ?: IllegalStateException("Не удалось запустить движок")
     }
 
+    /** Дату и время берём в момент создания диалога — поэтому «завтра» модель понимает правильно. */
     private fun conversationConfig() = ConversationConfig(
-        systemInstruction = Contents.of(SYSTEM_PROMPT),
+        systemInstruction = Contents.of(
+            "$SYSTEM_PROMPT Сейчас ${currentTimeForPrompt()}. $CALENDAR_PROMPT"
+        ),
+        tools = listOf(tool(calendarTools)),
     )
 
     private fun closeEngine() {
@@ -569,6 +589,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (s.generating || s.recording || s.attaching) return
 
         val botId = nextId + 1
+        currentBotId = botId
         val user = ChatMessage(nextId, fromUser = true, text = prompt, attachments = attachments)
         val bot = ChatMessage(botId, fromUser = false, text = "")
         nextId += 2
@@ -593,6 +614,115 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             } finally {
                 _state.update { it.copy(generating = false) }
             }
+        }
+    }
+
+    // ───────── Действия модели: календарь ─────────
+
+    fun setConfirmActions(enabled: Boolean) {
+        storage.confirmActions = enabled
+        _state.update { it.copy(confirmActions = enabled) }
+    }
+
+    /**
+     * Модель вызвала инструмент «добавить событие». Выполняется в потоке генерации.
+     * Возвращает ответ для модели: получилось ли и что сказать пользователю.
+     */
+    private fun handleProposal(ev: EventProposal): Pair<Boolean, String> {
+        val app = getApplication<Application>()
+        if (_state.value.confirmActions) {
+            addEvent(ev.copy(status = EventStatus.Pending))
+            return true to "The event is shown to the user as a card with Add and Reject buttons. " +
+                "It is NOT in the calendar yet. Briefly say what you prepared and ask the user to confirm with the button."
+        }
+        if (!hasCalendarPermission(app)) {
+            addEvent(ev.copy(status = EventStatus.NeedsPermission))
+            requestCalendarPermission()
+            return true to "The user is being asked to allow calendar access; the event will be added " +
+                "automatically as soon as they allow it. Briefly say that you are adding the event."
+        }
+        return try {
+            val calendarEventId = insertCalendarEvent(app, ev)
+            addEvent(ev.copy(status = EventStatus.Added, calendarEventId = calendarEventId))
+            true to "The event '${ev.title}' has been added to the user's calendar. Briefly confirm this."
+        } catch (t: Throwable) {
+            val reason = t.message ?: t.javaClass.simpleName
+            addEvent(ev.copy(status = EventStatus.Failed, error = reason))
+            false to "Could not add the event: $reason. Tell the user it failed."
+        }
+    }
+
+    private fun addEvent(ev: EventProposal) {
+        val botId = currentBotId
+        _state.update { s ->
+            s.copy(messages = s.messages.map { if (it.id == botId) it.copy(events = it.events + ev) else it })
+        }
+    }
+
+    private fun findEvent(id: Long): EventProposal? =
+        _state.value.messages.asSequence().flatMap { it.events.asSequence() }.firstOrNull { it.id == id }
+
+    private fun updateEvent(id: Long, change: (EventProposal) -> EventProposal) {
+        _state.update { s ->
+            s.copy(messages = s.messages.map { m ->
+                if (m.events.any { it.id == id }) m.copy(events = m.events.map { if (it.id == id) change(it) else it })
+                else m
+            })
+        }
+    }
+
+    /** Нажата «Добавить» на карточке (режим с подтверждением) или «Повторить» после ошибки. */
+    fun confirmEvent(eventId: Long) {
+        val ev = findEvent(eventId) ?: return
+        if (ev.status == EventStatus.Added || ev.status == EventStatus.NeedsPermission) return
+        if (!hasCalendarPermission(getApplication())) {
+            updateEvent(eventId) { it.copy(status = EventStatus.NeedsPermission, error = null) }
+            requestCalendarPermission()
+            return
+        }
+        insertEventAsync(eventId)
+    }
+
+    fun dismissEvent(eventId: Long) {
+        updateEvent(eventId) { if (it.status == EventStatus.Pending) it.copy(status = EventStatus.Dismissed) else it }
+    }
+
+    private fun insertEventAsync(eventId: Long) {
+        viewModelScope.launch {
+            val ev = findEvent(eventId) ?: return@launch
+            if (ev.status == EventStatus.Added) return@launch
+            try {
+                val calendarEventId = withContext(Dispatchers.IO) { insertCalendarEvent(getApplication(), ev) }
+                updateEvent(eventId) { it.copy(status = EventStatus.Added, calendarEventId = calendarEventId, error = null) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                updateEvent(eventId) { it.copy(status = EventStatus.Failed, error = t.message ?: t.javaClass.simpleName) }
+            }
+        }
+    }
+
+    /** Попросить интерфейс показать системный запрос. Пока предыдущий не закрыт, второй не показываем. */
+    private fun requestCalendarPermission() {
+        if (permissionInFlight) return
+        _state.update { it.copy(needCalendarPermission = true) }
+    }
+
+    /** Интерфейс показал окно запроса — сбрасываем флаг, чтобы не показать его повторно. */
+    fun calendarPermissionRequested() {
+        permissionInFlight = true
+        _state.update { it.copy(needCalendarPermission = false) }
+    }
+
+    /** Окно закрыто: записываем ожидавшие события или помечаем их как неудавшиеся. */
+    fun onCalendarPermissionResult() {
+        permissionInFlight = false
+        // Смотрим на реальное состояние разрешения, а не на ответ окна: он бывает пустым, если окно прервали
+        val granted = hasCalendarPermission(getApplication())
+        val waiting = _state.value.messages.flatMap { it.events }.filter { it.status == EventStatus.NeedsPermission }
+        for (ev in waiting) {
+            if (granted) insertEventAsync(ev.id)
+            else updateEvent(ev.id) { it.copy(status = EventStatus.Failed, error = "нет доступа к календарю") }
         }
     }
 
@@ -653,6 +783,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
         private const val SYSTEM_PROMPT =
             "Ты — Карманный домовой, дружелюбный помощник. Отвечай на языке собеседника, коротко и по делу."
+
+        private const val CALENDAR_PROMPT =
+            "Если пользователь просит внести событие, встречу, напоминание или дело в календарь — " +
+                "вызови инструмент добавления события, заранее пересчитав «завтра», «в пятницу» и подобное " +
+                "в точные даты. Если не хватает названия или даты — сначала коротко уточни. " +
+                "После вызова сообщи пользователю результат так, как его описывает ответ инструмента."
 
         private const val VOICE_HINT = "Это голосовое сообщение от пользователя. Ответь на него."
     }
