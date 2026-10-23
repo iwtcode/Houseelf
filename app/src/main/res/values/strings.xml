@@ -1,3 +1,4 @@
 <resources>
-    <string name="app_name">Houseelf</string>
+    <!-- Название под иконкой и в списке приложений. Houseelf — только технический идентификатор проекта. -->
+    <string name="app_name">Карманный домовой</string>
 </resources>

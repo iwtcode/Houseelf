@@ -51,9 +51,12 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
@@ -147,9 +150,149 @@ object DuoIcons {
 
 enum class Mood { Happy, Thinking, Sad }
 
-/** Домовой в янтарном колпаке. Рисуется на Canvas в координатах 64×64, как в макете. */
+/** Краски ёжика — как в исходном рисунке. */
+private object HogColors {
+    val SpineDark = Color(0xFF4B3029)
+    val SpineLight = Color(0xFF7A5447)
+    val Skin = Color(0xFFEBC9A2)
+    val SkinShade = Color(0xFFE3BC92)
+    val Muzzle = Color(0xFFF8E5CB)
+    val EarInner = Color(0xFFF2A99A)
+    val Cheek = Color(0xFFF4A58A)
+    val Brow = Color(0xFF5A3E36)
+    val Eye = Color(0xFF2B1B17)
+    val Nose = Color(0xFF3A2622)
+    val PocketBody = Color(0xFF2F7A8A)
+    val PocketLip = Color(0xFF3F97A8)
+    val Stitch = Color(0xFFCDEBF0)
+    val PawLine = Color(0xFFB98F66)
+}
+
+private fun svgPath(d: String): Path = PathParser().parsePathString(d).toPath()
+
+// Контуры из SVG-рисунка в координатах 400×400. Разбираются один раз.
+private val spinesOuter by lazy {
+    svgPath("M88.5 277.7 L65.9 266.3 L86.0 250.4 L67.1 234.0 L89.1 223.2 L71.8 201.8 L97.8 197.4 L87.5 174.0 L111.4 174.3 L104.6 147.3 L129.4 155.0 L128.7 127.8 L150.9 140.5 L156.3 115.4 L174.8 131.5 L184.9 106.0 L200.0 128.5 L214.8 108.4 L225.2 131.5 L244.3 113.5 L249.1 140.5 L270.5 129.2 L270.6 155.0 L293.9 149.0 L288.6 174.3 L313.9 173.0 L302.2 197.4 L329.0 201.5 L310.9 223.2 L332.8 234.0 L314.0 250.4 L333.6 266.3 L311.5 277.7 L200 302 Z")
+}
+private val spinesInner by lazy {
+    svgPath("M107.2 273.9 L87.5 260.9 L106.6 247.0 L89.5 228.6 L112.5 220.9 L101.8 199.1 L124.6 197.3 L120.1 173.8 L142.0 178.1 L142.3 152.0 L163.5 164.4 L171.1 143.2 L187.5 157.4 L200.0 135.5 L212.5 157.4 L229.2 142.2 L236.5 164.4 L256.1 155.1 L258.0 178.1 L279.1 174.7 L275.4 197.3 L297.2 199.6 L287.5 220.9 L310.0 228.7 L293.4 247.0 L310.7 260.9 L292.8 273.9 L200 308 Z")
+}
+private val faceTop by lazy {
+    svgPath("M122.2 223.4 L128.3 212.5 L136.6 202.6 L146.8 194.1 L158.6 187.2 L171.7 182.2 L185.6 179.0 L200.0 178.0 L214.4 179.0 L228.3 182.2 L241.4 187.2 L253.2 194.1 L263.4 202.6 L271.7 212.5 L277.8 223.4 L267.7 226.5 L249.9 223.0 L255.2 208.4 L237.0 210.2 L236.0 195.0 L219.7 201.9 L212.5 187.9 L200.0 199.0 L187.5 187.9 L180.3 201.9 L164.0 195.0 L163.0 210.2 L144.8 208.4 L150.1 223.0 L132.3 226.5 Z")
+}
+private val pocketBody by lazy { svgPath("M82 306h236v44a26 26 0 0 1-26 26H108a26 26 0 0 1-26-26z") }
+private val pocketStitchBody by lazy { svgPath("M96 322h208v28a16 16 0 0 1-16 16H112a16 16 0 0 1-16-16z") }
+private val pocketStitchLip by lazy { svgPath("M90 298h220") }
+private val toes by lazy { svgPath("M152 284v6M158 283v7M164 284v6M236 284v6M242 283v7M248 284v6") }
+
+private val browsHappy by lazy { svgPath("M153 227q13-8 26 0M221 227q13-8 26 0") }
+private val browsSad by lazy { svgPath("M153 230q13-3 26-9M247 230q-13-3-26-9") }
+private val browsThinking by lazy { svgPath("M153 227q13-8 26 0M221 220q13-8 26 0") }
+private val mouthHappy by lazy { svgPath("M200 265v4M200 269q-5 6-11 3M200 269q5 6 11 3") }
+private val mouthSad by lazy { svgPath("M200 265v3M200 268q-5-5-11-2M200 268q5-5 11-2") }
+private val mouthThinking by lazy { svgPath("M200 265v2") }
+
+private val stickerLines1 by lazy { svgPath("M99 171h20M99 178h14M99 185h17") }
+private val stickerCheck by lazy { svgPath("M284 170l6 6 12-13") }
+private val stickerLines2 by lazy { svgPath("M188 120h20M188 127h14M188 134h17") }
+
+private fun DrawScope.oval(cx: Float, cy: Float, rx: Float, ry: Float, color: Color, alpha: Float = 1f) =
+    drawOval(color, topLeft = Offset(cx - rx, cy - ry), size = Size(rx * 2, ry * 2), alpha = alpha)
+
+private fun DrawScope.sticker(x: Float, y: Float, side: Float, color: Color) =
+    drawRoundRect(color, topLeft = Offset(x, y), size = Size(side, side), cornerRadius = CornerRadius(4f))
+
+private fun DrawScope.line(path: Path, color: Color, width: Float, alpha: Float = 1f, dashed: Boolean = false) =
+    drawPath(
+        path, color, alpha = alpha,
+        style = Stroke(
+            width = width, cap = StrokeCap.Round, join = StrokeJoin.Round,
+            pathEffect = if (dashed) PathEffect.dashPathEffect(floatArrayOf(6f, 6f)) else null,
+        ),
+    )
+
+/** Сам рисунок. Координаты — как в исходном SVG (400×400). */
+private fun DrawScope.drawHedgehog(mood: Mood) {
+    // Иголки: тёмная подложка и светлый слой поверх
+    drawPath(spinesOuter, HogColors.SpineDark)
+    drawPath(spinesOuter, HogColors.SpineDark, style = Stroke(3f, join = StrokeJoin.Round))
+    drawPath(spinesInner, HogColors.SpineLight)
+    drawPath(spinesInner, HogColors.SpineLight, style = Stroke(3f, join = StrokeJoin.Round))
+
+    // Стикеры с делами на иголках
+    rotate(-20f, Offset(108f, 175f)) {
+        sticker(92f, 160f, 34f, Color(0xFFFFD66B))
+        line(stickerLines1, Color(0xFFB98A1C), 2.4f)
+    }
+    rotate(16f, Offset(292f, 168f)) {
+        sticker(275f, 152f, 34f, Color(0xFF8FD9B6))
+        line(stickerCheck, Color(0xFF1F6B4F), 3.4f)
+    }
+    rotate(-5f, Offset(198f, 126f)) {
+        sticker(180f, 108f, 36f, Color(0xFFF7A8B8))
+        line(stickerLines2, Color(0xFFB5546B), 2.4f)
+    }
+
+    // Уши
+    oval(132f, 206f, 15f, 15f, HogColors.SkinShade)
+    oval(132f, 206f, 8f, 8f, HogColors.EarInner)
+    oval(268f, 206f, 15f, 15f, HogColors.SkinShade)
+    oval(268f, 206f, 8f, 8f, HogColors.EarInner)
+
+    // Мордочка
+    oval(200f, 247f, 72f, 60f, HogColors.Skin)
+    drawPath(faceTop, HogColors.SpineLight)
+    oval(200f, 266f, 29f, 21f, HogColors.Muzzle)
+    oval(146f, 263f, 11f, 7f, HogColors.Cheek, alpha = 0.75f)
+    oval(254f, 263f, 11f, 7f, HogColors.Cheek, alpha = 0.75f)
+
+    // Брови
+    line(
+        when (mood) {
+            Mood.Happy -> browsHappy
+            Mood.Sad -> browsSad
+            Mood.Thinking -> browsThinking
+        },
+        HogColors.Brow, 3.5f,
+    )
+
+    // Глаза. При «раздумьях» ёжик смотрит вверх.
+    val up = if (mood == Mood.Thinking) -4f else 0f
+    oval(166f, 243f + up, 8.5f, 9.5f, HogColors.Eye)
+    oval(234f, 243f + up, 8.5f, 9.5f, HogColors.Eye)
+    oval(169f, 239.5f + up, 3.2f, 3.2f, Color.White)
+    oval(237f, 239.5f + up, 3.2f, 3.2f, Color.White)
+    oval(163.5f, 247f + up, 1.5f, 1.5f, Color.White)
+    oval(231.5f, 247f + up, 1.5f, 1.5f, Color.White)
+
+    // Нос и рот
+    oval(200f, 259f, 8.5f, 6f, HogColors.Nose)
+    oval(198f, 257f, 2.6f, 1.5f, Color.White, alpha = 0.6f)
+    when (mood) {
+        Mood.Happy -> line(mouthHappy, HogColors.Nose, 2.6f)
+        Mood.Sad -> line(mouthSad, HogColors.Nose, 2.6f)
+        Mood.Thinking -> {
+            line(mouthThinking, HogColors.Nose, 2.6f)
+            drawCircle(HogColors.Nose, radius = 3.4f, center = Offset(200f, 272f), style = Stroke(2.4f))
+        }
+    }
+
+    // Карман со строчкой и лапки на его краю
+    drawPath(pocketBody, HogColors.PocketBody)
+    line(pocketStitchBody, HogColors.Stitch, 2.4f, dashed = true)
+    drawRoundRect(HogColors.PocketLip, Offset(74f, 286f), Size(252f, 24f), CornerRadius(12f))
+    line(pocketStitchLip, HogColors.Stitch, 2f, alpha = 0.8f, dashed = true)
+    oval(158f, 288f, 17f, 12f, HogColors.Skin)
+    oval(242f, 288f, 17f, 12f, HogColors.Skin)
+    line(toes, HogColors.PawLine, 2f)
+}
+
+/**
+ * Ёжик-домовой выглядывает из кармана. Рисуется на Canvas по рисунку из SVG:
+ * в кадр попадает всё, кроме фоновой плашки.
+ */
 @Composable
-fun Elf(
+fun Hedgehog(
     sizeDp: Dp,
     modifier: Modifier = Modifier,
     mood: Mood = Mood.Happy,
@@ -170,37 +313,13 @@ fun Elf(
             .size(sizeDp)
             .graphicsLayer { translationY = bobY * density },
     ) {
-        scale(scale = this.size.width / 64f, pivot = Offset.Zero) {
-            drawCircle(Duo.Mint, radius = 20f, center = Offset(32f, 40f))
-
-            val hat = Path().apply {
-                moveTo(15f, 29f)
-                lineTo(32f, 4f)
-                lineTo(49f, 29f)
-                close()
-            }
-            drawPath(hat, Duo.Amber)
-            drawCircle(Duo.Cherry, radius = 3.5f, center = Offset(32f, 5f))
-
-            // При «раздумьях» домовой смотрит вверх
-            val lookUp = if (mood == Mood.Thinking) -1.4f else 0f
-            drawCircle(Duo.Ink, radius = 3.6f, center = Offset(25f, 40f))
-            drawCircle(Duo.Ink, radius = 3.6f, center = Offset(39f, 40f))
-            drawCircle(Color.White, radius = 1.3f, center = Offset(26.2f, 38.8f + lookUp))
-            drawCircle(Color.White, radius = 1.3f, center = Offset(40.2f, 38.8f + lookUp))
-
-            val mouth = Stroke(width = 2.5f, cap = StrokeCap.Round)
-            when (mood) {
-                Mood.Happy -> drawArc(
-                    color = Duo.Ink, startAngle = 40f, sweepAngle = 100f, useCenter = false,
-                    topLeft = Offset(25f, 35f), size = Size(14f, 14f), style = mouth,
-                )
-                Mood.Sad -> drawArc(
-                    color = Duo.Ink, startAngle = 220f, sweepAngle = 100f, useCenter = false,
-                    topLeft = Offset(25f, 49f), size = Size(14f, 14f), style = mouth,
-                )
-                Mood.Thinking -> drawCircle(Duo.Ink, radius = 2.4f, center = Offset(32f, 49f), style = Stroke(width = 2f))
-            }
+        // Видимая часть рисунка: квадрат 300×300 с началом в точке (50, 85)
+        val k = size.width / 300f
+        withTransform({
+            scale(k, k, Offset.Zero)
+            translate(-50f, -85f)
+        }) {
+            drawHedgehog(mood)
         }
     }
 }

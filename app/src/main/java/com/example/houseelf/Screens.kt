@@ -50,12 +50,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -125,7 +128,7 @@ fun LibraryScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(14.dp),
                     ) {
-                        Elf(64.dp)
+                        Hedgehog(64.dp)
                         Column {
                             Text(
                                 if (models.isEmpty()) "Нужна модель" else "Думает на телефоне",
@@ -390,7 +393,7 @@ fun ProgressScreen(
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Elf(96.dp, mood = Mood.Thinking, bob = true)
+        Hedgehog(96.dp, mood = Mood.Thinking, bob = true)
         Spacer(Modifier.height(16.dp))
         Text(title, style = MaterialTheme.typography.titleLarge, textAlign = TextAlign.Center)
         Spacer(Modifier.height(24.dp))
@@ -417,7 +420,7 @@ fun LoadingScreen(text: String, modifier: Modifier = Modifier) {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Elf(96.dp, mood = Mood.Thinking, bob = true)
+        Hedgehog(96.dp, mood = Mood.Thinking, bob = true)
         if (text.isNotEmpty()) {
             Spacer(Modifier.height(20.dp))
             Text(text, style = MaterialTheme.typography.bodyLarge, color = Duo.Muted, textAlign = TextAlign.Center)
@@ -437,7 +440,7 @@ fun ErrorScreen(
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Elf(96.dp, mood = Mood.Sad)
+        Hedgehog(96.dp, mood = Mood.Sad)
         Spacer(Modifier.height(16.dp))
         Text("Что-то пошло не так", style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(12.dp))
@@ -468,6 +471,7 @@ class EventActions(
     val onView: (Long) -> Unit,
 )
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun ChatScreen(
     state: UiState,
@@ -486,6 +490,16 @@ fun ChatScreen(
 ) {
     var input by rememberSaveable { mutableStateOf("") }
     val listState = rememberLazyListState()
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+
+    // Отправка всегда убирает клавиатуру: снимаем фокус с поля и прячем её
+    val submit: (String) -> Unit = { text ->
+        onSend(text)
+        input = ""
+        focusManager.clearFocus()
+        keyboard?.hide()
+    }
 
     // Список перевёрнут (reverseLayout): индекс 0 — самое нижнее сообщение,
     // поэтому растущий ответ модели остаётся прижатым к низу экрана.
@@ -504,7 +518,7 @@ fun ChatScreen(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             DuoIconButton(DuoIcons.Back, "Назад", onBack)
-            Elf(44.dp, mood = if (state.generating) Mood.Thinking else Mood.Happy)
+            Hedgehog(44.dp, mood = if (state.generating) Mood.Thinking else Mood.Happy)
             Column(
                 Modifier
                     .weight(1f)
@@ -531,7 +545,7 @@ fun ChatScreen(
                     Modifier.align(Alignment.Center).padding(32.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Elf(96.dp)
+                    Hedgehog(96.dp)
                     Spacer(Modifier.height(16.dp))
                     Text(
                         if (state.mediaSupported) "Напиши домовому, пришли фото\nили запиши голосовое" else "Напиши что-нибудь домовому",
@@ -566,8 +580,8 @@ fun ChatScreen(
                     .padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                SuggestionChip("Что на сегодня?") { onSend("Что на сегодня?") }
-                SuggestionChip("Разбить дело на шаги") { onSend("Разбей моё дело на шаги") }
+                SuggestionChip("Что на сегодня?") { submit("Что на сегодня?") }
+                SuggestionChip("Разбить дело на шаги") { submit("Разбей моё дело на шаги") }
             }
         }
 
@@ -668,21 +682,17 @@ fun ChatScreen(
                             maxLines = 5,
                         )
                     }
-                    if (!hasContent && state.mediaSupported) {
-                        // Пустое поле и нет вложений — вместо «Отправить» показываем микрофон
+                    // Микрофон и «Отправить» всегда рядом: ни одна кнопка не прячется и не подменяет другую
+                    if (state.mediaSupported) {
                         DuoIconButton(DuoIcons.Mic, "Голосовое", onStartRecording, enabled = !state.attaching)
-                    } else {
-                        DuoIconButton(
-                            DuoIcons.Send,
-                            "Отправить",
-                            {
-                                onSend(input)
-                                input = ""
-                            },
-                            filled = true,
-                            enabled = hasContent && !state.generating && !state.attaching,
-                        )
                     }
+                    DuoIconButton(
+                        DuoIcons.Send,
+                        "Отправить",
+                        { submit(input) },
+                        filled = true,
+                        enabled = hasContent && !state.generating && !state.attaching,
+                    )
                 }
             }
         }

@@ -255,7 +255,7 @@ fun TodayScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Elf(72.dp)
+                Hedgehog(72.dp)
                 if (tip.isNotEmpty()) {
                     DuoCard(Modifier.weight(1f)) {
                         Text(tip, Modifier.padding(horizontal = 14.dp, vertical = 12.dp), style = MaterialTheme.typography.bodyLarge)
