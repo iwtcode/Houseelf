@@ -9,6 +9,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.viewModels
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -25,6 +27,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.houseelf.ui.theme.HouseelfTheme
 
 class MainActivity : ComponentActivity() {
+    private val chatViewModel: ChatViewModel by viewModels()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -35,11 +39,19 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier
                             .padding(innerPadding)
                             .consumeWindowInsets(innerPadding)
-                            .imePadding()
+                            .imePadding(),
+                        vm = chatViewModel,
                     )
                 }
             }
         }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // В фоне Android глушит микрофон: сохраняем то, что успели записать.
+        // При повороте экрана запись не прерываем.
+        if (!isChangingConfigurations) chatViewModel.stopRecording(discard = false)
     }
 }
 
@@ -65,6 +77,29 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel()) 
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         } else {
             vm.requestDownload()
+        }
+    }
+
+    // Выбор изображений из галереи (системный Photo Picker, разрешения не нужны)
+    val imagePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(ChatViewModel.MAX_IMAGES)
+    ) { uris -> vm.attachImages(uris) }
+
+    // Выбор аудиофайла
+    val audioPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) vm.attachAudio(uri)
+    }
+
+    // Голосовой ввод: сначала разрешение на микрофон, потом запись
+    val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) vm.startRecording()
+        else vm.showNotice("Без доступа к микрофону голосовой ввод не работает")
+    }
+    val onMic = {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            vm.startRecording()
+        } else {
+            micPermission.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
 
@@ -112,6 +147,14 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel()) 
             onSend = vm::send,
             onNewChat = vm::newChat,
             onOpenLibrary = vm::openLibrary,
+            onPickImages = {
+                imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            },
+            onPickAudio = { audioPicker.launch(arrayOf("audio/*")) },
+            onStartRecording = onMic,
+            onStopRecording = { vm.stopRecording(discard = false) },
+            onCancelRecording = { vm.stopRecording(discard = true) },
+            onRemoveAttachment = vm::removeAttachment,
             modifier = modifier,
         )
     }

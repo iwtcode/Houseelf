@@ -1,5 +1,10 @@
 package com.example.houseelf
 
+import android.media.MediaPlayer
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -10,18 +15,24 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -30,6 +41,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -38,7 +50,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 // ───────── Библиотека моделей ─────────
@@ -311,6 +328,12 @@ fun ChatScreen(
     onSend: (String) -> Unit,
     onNewChat: () -> Unit,
     onOpenLibrary: () -> Unit,
+    onPickImages: () -> Unit,
+    onPickAudio: () -> Unit,
+    onStartRecording: () -> Unit,
+    onStopRecording: () -> Unit,
+    onCancelRecording: () -> Unit,
+    onRemoveAttachment: (Long) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var input by rememberSaveable { mutableStateOf("") }
@@ -339,9 +362,10 @@ fun ChatScreen(
         Box(Modifier.weight(1f).fillMaxWidth()) {
             if (state.messages.isEmpty()) {
                 Text(
-                    "Напишите что-нибудь домовому",
+                    if (state.mediaSupported) "Напишите домовому, пришлите фото\nили запишите голосовое" else "Напишите что-нибудь домовому",
                     modifier = Modifier.align(Alignment.Center),
                     style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
                 )
             }
             LazyColumn(
@@ -355,31 +379,205 @@ fun ChatScreen(
             }
         }
 
+        Column(Modifier.fillMaxWidth().padding(8.dp)) {
+            if (state.notice != null) {
+                Text(
+                    state.notice,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(start = 4.dp, bottom = 6.dp),
+                )
+            }
+
+            // Прикреплённое, но ещё не отправленное
+            if (state.draft.isNotEmpty() || state.attaching) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    state.draft.forEach { att ->
+                        when (att) {
+                            is ImageAttachment -> ImageThumb(att, 72.dp, onRemove = { onRemoveAttachment(att.id) })
+                            is AudioAttachment -> AudioChip(att, onRemove = { onRemoveAttachment(att.id) })
+                        }
+                    }
+                    if (state.attaching) {
+                        Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                        }
+                    }
+                }
+            }
+
+            if (state.recording) {
+                RecordingBar(
+                    elapsedMs = state.recordingMs,
+                    onStop = onStopRecording,
+                    onCancel = onCancelRecording,
+                )
+            } else {
+                var menuOpen by remember { mutableStateOf(false) }
+                val hasContent = input.isNotBlank() || state.draft.isNotEmpty()
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.Bottom,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    if (state.mediaSupported) {
+                        Box(Modifier.padding(bottom = 4.dp)) {
+                            IconButton(onClick = { menuOpen = true }, enabled = !state.attaching) {
+                                Text("📎", style = MaterialTheme.typography.titleLarge)
+                            }
+                            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("Изображение") },
+                                    onClick = { menuOpen = false; onPickImages() },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Аудиофайл") },
+                                    onClick = { menuOpen = false; onPickAudio() },
+                                )
+                            }
+                        }
+                    }
+                    OutlinedTextField(
+                        value = input,
+                        onValueChange = { input = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("Сообщение") },
+                        maxLines = 5,
+                    )
+                    if (!hasContent && state.mediaSupported) {
+                        // Пустое поле и нет вложений — вместо «Отправить» показываем микрофон
+                        IconButton(
+                            onClick = onStartRecording,
+                            enabled = !state.attaching,
+                            modifier = Modifier.padding(bottom = 4.dp),
+                        ) { Text("🎤", style = MaterialTheme.typography.titleLarge) }
+                    } else {
+                        Button(
+                            onClick = {
+                                onSend(input)
+                                input = ""
+                            },
+                            enabled = hasContent && !state.generating && !state.attaching,
+                        ) { Text("Отпр.") }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Панель на время записи голоса. */
+@Composable
+private fun RecordingBar(elapsedMs: Long, onStop: () -> Unit, onCancel: () -> Unit) {
+    val maxMs = Media.MAX_AUDIO_SECONDS * 1000L
+    Column(Modifier.fillMaxWidth()) {
+        LinearProgressIndicator(
+            progress = { (elapsedMs.toFloat() / maxMs).coerceIn(0f, 1f) },
+            modifier = Modifier.fillMaxWidth(),
+        )
         Row(
-            modifier = Modifier.fillMaxWidth().padding(8.dp),
-            verticalAlignment = Alignment.Bottom,
+            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            OutlinedTextField(
-                value = input,
-                onValueChange = { input = it },
+            Text("●", color = MaterialTheme.colorScheme.error)
+            Text(
+                "Запись ${formatDuration(elapsedMs)} / ${formatDuration(maxMs)}",
                 modifier = Modifier.weight(1f),
-                placeholder = { Text("Сообщение") },
-                maxLines = 5,
+                style = MaterialTheme.typography.bodyMedium,
             )
-            Button(
-                onClick = {
-                    onSend(input)
-                    input = ""
-                },
-                enabled = input.isNotBlank() && !state.generating,
-            ) { Text("Отпр.") }
+            TextButton(onClick = onCancel) { Text("Отмена") }
+            Button(onClick = onStop) { Text("Готово") }
+        }
+    }
+}
+
+@Composable
+private fun ImageThumb(att: ImageAttachment, size: Dp, onRemove: (() -> Unit)? = null) {
+    val bitmap = remember(att.id) { att.thumbnail.asImageBitmap() }
+    Box(Modifier.size(size)) {
+        Image(
+            bitmap = bitmap,
+            contentDescription = "Изображение",
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(12.dp)),
+        )
+        if (onRemove != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(4.dp)
+                    .size(24.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.6f))
+                    .clickable(onClick = onRemove),
+                contentAlignment = Alignment.Center,
+            ) { Text("✕", color = Color.White, style = MaterialTheme.typography.labelSmall) }
+        }
+    }
+}
+
+/** Аудио-вложение: кнопка воспроизведения, подпись и (в черновике) крестик. */
+@Composable
+private fun AudioChip(att: AudioAttachment, onRemove: (() -> Unit)? = null) {
+    var player by remember { mutableStateOf<MediaPlayer?>(null) }
+    var playing by remember { mutableStateOf(false) }
+
+    fun stop() {
+        runCatching { player?.release() }
+        player = null
+        playing = false
+    }
+
+    fun toggle() {
+        if (playing) {
+            stop()
+            return
+        }
+        val mp = MediaPlayer()
+        try {
+            mp.setDataSource(att.path)
+            mp.setOnCompletionListener { stop() }
+            mp.prepare()
+            mp.start()
+            player = mp
+            playing = true
+        } catch (_: Throwable) {
+            runCatching { mp.release() }
+        }
+    }
+
+    DisposableEffect(Unit) { onDispose { stop() } }
+
+    Surface(
+        shape = RoundedCornerShape(24.dp),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 2.dp,
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 4.dp, end = if (onRemove != null) 0.dp else 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = { toggle() }) { Text(if (playing) "⏹" else "▶") }
+            Text(
+                "${if (att.isVoice) "Голосовое" else "Аудио"} · ${formatDuration(att.durationMs)}",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            if (onRemove != null) {
+                IconButton(onClick = onRemove) { Text("✕", style = MaterialTheme.typography.labelLarge) }
+            }
         }
     }
 }
 
 @Composable
 private fun MessageBubble(message: ChatMessage) {
+    val images = message.attachments.filterIsInstance<ImageAttachment>()
+    val audios = message.attachments.filterIsInstance<AudioAttachment>()
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (message.fromUser) Arrangement.End else Arrangement.Start,
@@ -390,11 +588,25 @@ private fun MessageBubble(message: ChatMessage) {
             else MaterialTheme.colorScheme.surfaceVariant,
             modifier = Modifier.widthIn(max = 320.dp),
         ) {
-            Text(
-                text = message.text.ifEmpty { "…" },
+            Column(
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                style = MaterialTheme.typography.bodyLarge,
-            )
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                if (images.isNotEmpty()) {
+                    // Одно фото показываем крупно, несколько — мелкими плитками в ряд
+                    val side = when (images.size) { 1 -> 200.dp; 2 -> 130.dp; 3 -> 90.dp; else -> 64.dp }
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        images.forEach { ImageThumb(it, side) }
+                    }
+                }
+                audios.forEach { AudioChip(it) }
+                if (message.text.isNotEmpty() || !message.fromUser) {
+                    Text(
+                        text = message.text.ifEmpty { "…" },
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                }
+            }
         }
     }
 }
