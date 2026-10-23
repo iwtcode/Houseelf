@@ -1,7 +1,9 @@
 package com.example.houseelf
 
 import android.annotation.SuppressLint
+import android.app.ActivityManager
 import android.app.Application
+import android.content.Context
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
@@ -51,6 +53,11 @@ data class UiState(
     val askNetworkChoice: Boolean = false,
     /** Скачивание сейчас ждёт Wi-Fi. */
     val waitingWifi: Boolean = false,
+    /** Оперативная память телефона: свободно / всего (обновляется при открытии списка моделей). */
+    val freeRamBytes: Long = 0,
+    val totalRamBytes: Long = 0,
+    /** Загружать последнюю модель в память при запуске приложения. */
+    val autoLoad: Boolean = true,
     /** Движок загружен с поддержкой изображений и звука. */
     val mediaSupported: Boolean = false,
     /** Вложения, прикреплённые к ещё не отправленному сообщению. */
@@ -87,16 +94,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     init {
         Media.clearAttachments(app) // файлы вложений от прошлого запуска больше не нужны
         val models = storage.listModels()
+        val autoLoad = storage.autoLoadOnStart
+        _state.update { it.copy(autoLoad = autoLoad) }
         when {
             storage.hasPendingDownload() -> { // приложение перезапустили во время скачивания
                 storage.resumeDownloadIfNeeded()
                 watchDownload()
             }
             else -> {
-                // Открываем последнюю использованную модель; если выбора нет — показываем список
+                // Если включена автозагрузка — открываем последнюю использованную модель;
+                // если выбора нет или автозагрузка выключена — показываем список
                 val auto = storage.lastUsedModel?.takeIf { name -> models.any { it.fileName == name } }
                     ?: models.singleOrNull()?.fileName
-                if (auto != null) loadEngine(auto) else showLibrary()
+                if (autoLoad && auto != null) loadEngine(auto) else showLibrary()
             }
         }
     }
@@ -104,10 +114,45 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     // ───────── Библиотека моделей ─────────
 
     private fun showLibrary(error: String? = null) {
+        val (free, total) = ramInfo()
         _state.update {
             it.copy(phase = Phase.Library, progress = null, error = error, waitingWifi = false,
-                models = storage.listModels())
+                models = storage.listModels(), freeRamBytes = free, totalRamBytes = total)
         }
+    }
+
+    /** Свободная и общая оперативная память телефона. */
+    private fun ramInfo(): Pair<Long, Long> {
+        val am = getApplication<Application>().getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val info = ActivityManager.MemoryInfo()
+        am.getMemoryInfo(info)
+        return info.availMem to info.totalMem
+    }
+
+    /**
+     * Выгрузить модель из оперативной памяти. Файл модели остаётся на телефоне.
+     * Текущий диалог закрывается — вместе с моделью пропадает и его контекст.
+     */
+    fun unloadModel() {
+        if (_state.value.generating || loadJob?.isActive == true) return
+        if (engine == null && _state.value.activeModel == null) return
+        stopRecording(discard = true)
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                closeEngine()
+                Media.clearAttachments(getApplication())
+            }
+            _state.update {
+                it.copy(activeModel = null, messages = emptyList(), backend = "",
+                    mediaSupported = false, draft = emptyList(), notice = null)
+            }
+            showLibrary()
+        }
+    }
+
+    fun setAutoLoad(enabled: Boolean) {
+        storage.autoLoadOnStart = enabled
+        _state.update { it.copy(autoLoad = enabled) }
     }
 
     /** Открыть список моделей. Загруженная модель и чат остаются в памяти. */

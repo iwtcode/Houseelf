@@ -38,6 +38,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -65,7 +66,13 @@ fun LibraryScreen(
     models: List<ModelInfo>,
     activeModel: String?,
     error: String?,
+    freeRamBytes: Long,
+    totalRamBytes: Long,
+    autoLoad: Boolean,
+    chatHasMessages: Boolean,
     onSelect: (String) -> Unit,
+    onUnload: () -> Unit,
+    onAutoLoadChange: (Boolean) -> Unit,
     onDelete: (String) -> Unit,
     onDownload: () -> Unit,
     onPickFile: () -> Unit,
@@ -73,6 +80,7 @@ fun LibraryScreen(
     modifier: Modifier = Modifier,
 ) {
     var pendingDelete by remember { mutableStateOf<ModelInfo?>(null) }
+    var pendingUnload by remember { mutableStateOf(false) }
     val canGoBack = activeModel != null
     val canDownload = models.none { it.fileName == ModelStorage.MODEL_FILE_NAME }
 
@@ -85,7 +93,15 @@ fun LibraryScreen(
                 TextButton(onClick = onBack) { Text("← К чату") }
                 Spacer(Modifier.width(4.dp))
             }
-            Text("Модели", style = MaterialTheme.typography.titleLarge)
+            Column {
+                Text("Модели", style = MaterialTheme.typography.titleLarge)
+                if (totalRamBytes > 0) {
+                    Text(
+                        "Память телефона: свободно ${formatSize(freeRamBytes)} из ${formatSize(totalRamBytes)}",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
         }
         HorizontalDivider()
 
@@ -114,20 +130,40 @@ fun LibraryScreen(
             } else {
                 item {
                     Column {
-                        Text("Загружены на телефоне", style = MaterialTheme.typography.titleMedium)
+                        Text("Установлены на телефоне", style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "Нажмите на модель, чтобы открыть чат с ней",
+                            "Загрузите модель в память, чтобы общаться с ней. " +
+                                "Выгрузите — чтобы освободить оперативную память.",
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
                 }
                 items(models, key = { it.fileName }) { model ->
+                    val loaded = model.fileName == activeModel
                     ModelCard(
                         model = model,
-                        isActive = model.fileName == activeModel,
-                        onClick = { onSelect(model.fileName) },
+                        isLoaded = loaded,
+                        onOpenOrLoad = { onSelect(model.fileName) },
+                        onUnload = { if (chatHasMessages) pendingUnload = true else onUnload() },
                         onDelete = { pendingDelete = model },
                     )
+                }
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Загружать при запуске", style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                "Последняя модель сама встанет в память. " +
+                                    "Если выключить — приложение откроется со списком моделей.",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Switch(checked = autoLoad, onCheckedChange = onAutoLoadChange)
+                    }
                 }
             }
 
@@ -167,6 +203,28 @@ fun LibraryScreen(
         }
     }
 
+    if (pendingUnload) {
+        AlertDialog(
+            onDismissRequest = { pendingUnload = false },
+            title = { Text("Выгрузить модель из памяти?") },
+            text = {
+                Text(
+                    "Текущий диалог закроется: вместе с моделью из памяти уйдёт и его контекст. " +
+                        "Файл модели останется на телефоне."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingUnload = false
+                    onUnload()
+                }) { Text("Выгрузить") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingUnload = false }) { Text("Отмена") }
+            },
+        )
+    }
+
     pendingDelete?.let { model ->
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
@@ -194,31 +252,36 @@ fun LibraryScreen(
 @Composable
 private fun ModelCard(
     model: ModelInfo,
-    isActive: Boolean,
-    onClick: () -> Unit,
+    isLoaded: Boolean,
+    onOpenOrLoad: () -> Unit,
+    onUnload: () -> Unit,
     onDelete: () -> Unit,
 ) {
     Card(
-        onClick = onClick,
+        onClick = onOpenOrLoad,
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = if (isActive) MaterialTheme.colorScheme.primaryContainer
+            containerColor = if (isLoaded) MaterialTheme.colorScheme.primaryContainer
             else MaterialTheme.colorScheme.surfaceVariant,
         ),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(model.displayName, style = MaterialTheme.typography.titleMedium)
-                Text(
-                    formatSize(model.sizeBytes) + if (isActive) " · сейчас открыта" else "",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            TextButton(onClick = onDelete) {
-                Text("Удалить", color = MaterialTheme.colorScheme.error)
+        Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 4.dp)) {
+            Text(model.displayName, style = MaterialTheme.typography.titleMedium)
+            Text(
+                formatSize(model.sizeBytes) + if (isLoaded) " · в оперативной памяти" else " · не загружена",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                if (isLoaded) {
+                    TextButton(onClick = onOpenOrLoad) { Text("Открыть чат") }
+                    TextButton(onClick = onUnload) { Text("Выгрузить") }
+                } else {
+                    TextButton(onClick = onOpenOrLoad) { Text("Загрузить в память") }
+                }
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = onDelete) {
+                    Text("Удалить", color = MaterialTheme.colorScheme.error)
+                }
             }
         }
     }

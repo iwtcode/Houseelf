@@ -95,6 +95,13 @@ class ModelStorage(private val context: Context) {
             editor.apply()
         }
 
+    /** Открывать ли последнюю модель (загружать её в память) при запуске приложения. */
+    var autoLoadOnStart: Boolean
+        get() = prefs.getBoolean(KEY_AUTO_LOAD, true)
+        set(value) {
+            prefs.edit().putBoolean(KEY_AUTO_LOAD, value).apply()
+        }
+
     /** Удаляет одну модель. Вызывается только по явной команде пользователя. */
     fun deleteModel(fileName: String) {
         modelFile(fileName).delete()
@@ -224,6 +231,7 @@ class ModelStorage(private val context: Context) {
             "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/$MODEL_FILE_NAME"
 
         private const val KEY_LAST_USED = "last_used"
+        private const val KEY_AUTO_LOAD = "auto_load_on_start"
         private const val KEY_DOWNLOAD_ACTIVE = "download_active"
         private const val KEY_WIFI_ONLY = "download_wifi_only"
         private const val REPORT_STEP = 8L * 1024 * 1024
