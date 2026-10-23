@@ -1,10 +1,13 @@
 package com.example.houseelf
 
-import android.app.DownloadManager
 import android.content.Context
+import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.provider.OpenableColumns
-import androidx.core.net.toUri
+import androidx.core.content.ContextCompat
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -12,13 +15,26 @@ import java.io.File
 import java.io.IOException
 import java.util.Locale
 
-/** Состояние системной загрузки (DownloadManager). */
+enum class DownloadPhase {
+    WaitingNetwork, // нет сети
+    WaitingWifi,    // ждём Wi-Fi (пользователь выбрал не качать по мобильной сети)
+    Running,
+    Done,
+    Failed,
+}
+
+/** Состояние скачивания модели. */
 data class DownloadStatus(
-    val status: Int,
+    val phase: DownloadPhase,
     val downloadedBytes: Long,
     val totalBytes: Long, // -1, пока размер неизвестен
-    val reason: Int,
+    val error: String? = null,
 )
+
+/** Связь между сервисом скачивания и интерфейсом. null — скачивание не идёт. */
+object DownloadTracker {
+    val status = MutableStateFlow<DownloadStatus?>(null)
+}
 
 /** Модель, лежащая на телефоне. */
 data class ModelInfo(val fileName: String, val sizeBytes: Long) {
@@ -46,13 +62,13 @@ fun formatSize(bytes: Long): String {
  * Моделей может быть несколько: любой файл *.litertlm в папке приложения
  * считается загруженной моделью. Удаляется модель только явным действием пользователя.
  *
- * Скачивание делает системный DownloadManager: оно идёт в фоне, переживает
- * сворачивание приложения, докачивается после обрыва сети и сам показывает уведомление.
+ * Скачивание делает ModelDownloadService (foreground-сервис): оно идёт в фоне,
+ * переживает сворачивание приложения, докачивается после обрыва сети и показывает уведомление.
+ * Системный DownloadManager не используется: большие файлы он сам откладывает до Wi-Fi.
  */
 class ModelStorage(private val context: Context) {
 
     private val prefs = context.getSharedPreferences("model", Context.MODE_PRIVATE)
-    private val downloadManager = context.getSystemService(DownloadManager::class.java)
 
     private val modelsDir: File
         get() = context.getExternalFilesDir(null) ?: context.filesDir
@@ -63,11 +79,9 @@ class ModelStorage(private val context: Context) {
 
     /** Все полностью загруженные модели. Недокачанный файл в список не попадает. */
     fun listModels(): List<ModelInfo> {
-        val downloading = hasPendingDownload()
         return modelsDir.listFiles().orEmpty()
+            // Недокачанный файл называется *.part, поэтому в список не попадает
             .filter { it.isFile && it.name.endsWith(MODEL_EXT, ignoreCase = true) && it.length() > 0 }
-            // DownloadManager пишет прямо в итоговый файл, пока качает
-            .filterNot { downloading && it.name == MODEL_FILE_NAME }
             .map { ModelInfo(it.name, it.length()) }
             .sortedBy { it.displayName.lowercase() }
     }
@@ -89,37 +103,43 @@ class ModelStorage(private val context: Context) {
 
     // ───────── Скачивание с Hugging Face ─────────
 
-    fun hasPendingDownload(): Boolean = prefs.contains(KEY_DOWNLOAD_ID)
+    /** Недокачанный файл. Докачка продолжается с его текущего размера. */
+    fun partFile(): File = File(modelsDir, "$MODEL_FILE_NAME.part")
 
-    fun enqueueDownload() {
-        modelFile(MODEL_FILE_NAME).delete() // DownloadManager не перезаписывает существующий файл
-        val request = DownloadManager.Request(MODEL_URL.toUri())
-            .setTitle("Gemma 4 E2B")
-            .setDescription("Загрузка модели для Домового")
-            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            .setDestinationInExternalFilesDir(context, null, MODEL_FILE_NAME)
-        val id = downloadManager.enqueue(request)
-        prefs.edit().putLong(KEY_DOWNLOAD_ID, id).apply()
+    fun hasPendingDownload(): Boolean = prefs.getBoolean(KEY_DOWNLOAD_ACTIVE, false)
+
+    /** true — качать только по Wi-Fi (точнее, по сети без учёта трафика). */
+    val downloadWifiOnly: Boolean get() = prefs.getBoolean(KEY_WIFI_ONLY, true)
+
+    /** Подключены ли мы сейчас к сети без учёта трафика (Wi-Fi). Нет сети — тоже false. */
+    fun isOnUnmeteredNetwork(): Boolean {
+        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return false
+        val network = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(network) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
     }
 
-    /** null — загрузки с таким id больше нет (отменена или удалена). */
-    fun downloadStatus(): DownloadStatus? {
-        val id = prefs.getLong(KEY_DOWNLOAD_ID, -1L)
-        if (id < 0) return null
-        downloadManager.query(DownloadManager.Query().setFilterById(id)).use { c ->
-            if (!c.moveToFirst()) return null
-            return DownloadStatus(
-                status = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS)),
-                downloadedBytes = c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)),
-                totalBytes = c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)),
-                reason = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON)),
-            )
-        }
+    /**
+     * Запускает скачивание (или докачку, если уже есть недокачанный файл).
+     * Повторный вызов с другим [wifiOnly] перезапускает сервис с новой настройкой.
+     */
+    fun startDownload(wifiOnly: Boolean) {
+        prefs.edit().putBoolean(KEY_DOWNLOAD_ACTIVE, true).putBoolean(KEY_WIFI_ONLY, wifiOnly).apply()
+        DownloadTracker.status.value = DownloadStatus(
+            if (wifiOnly) DownloadPhase.WaitingWifi else DownloadPhase.WaitingNetwork,
+            partFile().length(), -1L,
+        )
+        ContextCompat.startForegroundService(context, Intent(context, ModelDownloadService::class.java))
     }
 
-    /** Скачивание успешно завершилось: файл теперь обычная модель в библиотеке. */
-    fun finishDownload() {
-        prefs.edit().remove(KEY_DOWNLOAD_ID).apply()
+    /** Приложение перезапустили, а скачивание числится активным, но сервис не работает. */
+    fun resumeDownloadIfNeeded() {
+        if (hasPendingDownload() && DownloadTracker.status.value == null) startDownload(downloadWifiOnly)
+    }
+
+    /** Сервис вызывает это, когда скачивание закончилось (успешно или с ошибкой). */
+    fun clearDownloadState() {
+        prefs.edit().remove(KEY_DOWNLOAD_ACTIVE).remove(KEY_WIFI_ONLY).apply()
     }
 
     /**
@@ -128,10 +148,10 @@ class ModelStorage(private val context: Context) {
      */
     fun cancelDownload() {
         if (!hasPendingDownload()) return
-        val id = prefs.getLong(KEY_DOWNLOAD_ID, -1L)
-        if (id >= 0) downloadManager.remove(id) // заодно удаляет недокачанный файл
-        prefs.edit().remove(KEY_DOWNLOAD_ID).apply()
-        modelFile(MODEL_FILE_NAME).delete()
+        clearDownloadState()
+        context.stopService(Intent(context, ModelDownloadService::class.java))
+        DownloadTracker.status.value = null
+        partFile().delete()
     }
 
     // ───────── Загрузка из памяти телефона ─────────
@@ -204,7 +224,8 @@ class ModelStorage(private val context: Context) {
             "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/$MODEL_FILE_NAME"
 
         private const val KEY_LAST_USED = "last_used"
-        private const val KEY_DOWNLOAD_ID = "download_id"
+        private const val KEY_DOWNLOAD_ACTIVE = "download_active"
+        private const val KEY_WIFI_ONLY = "download_wifi_only"
         private const val REPORT_STEP = 8L * 1024 * 1024
     }
 }

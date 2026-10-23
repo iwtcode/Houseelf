@@ -1,5 +1,8 @@
 package com.example.houseelf
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -16,6 +19,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.houseelf.ui.theme.HouseelfTheme
 
@@ -47,6 +52,22 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel()) 
         if (uri != null) vm.importModel(uri)
     }
 
+    // Разрешение на уведомления (Android 13+): без него не будет уведомления о ходе скачивания.
+    // Отказ не мешает скачиванию, поэтому в любом случае продолжаем.
+    val context = LocalContext.current
+    val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        vm.requestDownload()
+    }
+    val onDownload = {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            vm.requestDownload()
+        }
+    }
+
     // Системная кнопка «Назад» в списке моделей возвращает в чат, а не закрывает приложение
     BackHandler(enabled = state.phase == Phase.Library && state.activeModel != null) {
         vm.backToChat()
@@ -65,7 +86,7 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel()) 
             error = state.error,
             onSelect = vm::selectModel,
             onDelete = vm::deleteModel,
-            onDownload = vm::startDownload,
+            onDownload = onDownload,
             onPickFile = { filePicker.launch(arrayOf("*/*")) },
             onBack = vm::backToChat,
             modifier = modifier,
@@ -77,6 +98,8 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel()) 
             hint = if (state.phase == Phase.Downloading) "Скачивание идёт в фоне — приложение можно свернуть." else null,
             onCancel = vm::cancelSetup,
             modifier = modifier,
+            extraActionText = if (state.phase == Phase.Downloading && state.waitingWifi) "Скачать по мобильной сети" else null,
+            onExtraAction = vm::continueOnMobile,
         )
         Phase.Error -> ErrorScreen(
             error = state.error.orEmpty(),
@@ -90,6 +113,14 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel()) 
             onNewChat = vm::newChat,
             onOpenLibrary = vm::openLibrary,
             modifier = modifier,
+        )
+    }
+
+    if (state.askNetworkChoice) {
+        NetworkChoiceDialog(
+            onWaitWifi = { vm.startDownload(wifiOnly = true) },
+            onContinue = { vm.startDownload(wifiOnly = false) },
+            onDismiss = vm::dismissNetworkChoice,
         )
     }
 }

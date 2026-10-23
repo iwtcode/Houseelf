@@ -215,6 +215,8 @@ fun ProgressScreen(
     hint: String?,
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
+    extraActionText: String? = null,
+    onExtraAction: (() -> Unit)? = null,
 ) {
     Column(
         modifier = modifier.fillMaxSize().padding(24.dp),
@@ -235,8 +237,33 @@ fun ProgressScreen(
             Text(hint, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center)
         }
         Spacer(Modifier.height(24.dp))
+        if (extraActionText != null && onExtraAction != null) {
+            Button(onClick = onExtraAction) { Text(extraActionText) }
+            Spacer(Modifier.height(8.dp))
+        }
         OutlinedButton(onClick = onCancel) { Text("Отмена") }
     }
+}
+
+/** Скачивание начинается не по Wi-Fi: пользователь решает, ждать Wi-Fi или качать по мобильной сети. */
+@Composable
+fun NetworkChoiceDialog(
+    onWaitWifi: () -> Unit,
+    onContinue: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Нет подключения к Wi-Fi") },
+        text = {
+            Text(
+                "Модель весит около 2,6 ГБ, а скачивание пойдёт через мобильный интернет — " +
+                    "это может израсходовать трафик. Подождать Wi-Fi или продолжить?"
+            )
+        },
+        dismissButton = { TextButton(onClick = onWaitWifi) { Text("Ждать Wi-Fi") } },
+        confirmButton = { TextButton(onClick = onContinue) { Text("Продолжить") } },
+    )
 }
 
 @Composable

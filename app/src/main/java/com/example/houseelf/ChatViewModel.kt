@@ -1,7 +1,6 @@
 package com.example.houseelf
 
 import android.app.Application
-import android.app.DownloadManager
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -36,6 +35,10 @@ data class UiState(
     val activeModel: String? = null,
     /** Файл модели, которая загружается прямо сейчас. */
     val loadingModel: String? = null,
+    /** Показать окно «ждать Wi-Fi или продолжить по мобильной сети». */
+    val askNetworkChoice: Boolean = false,
+    /** Скачивание сейчас ждёт Wi-Fi. */
+    val waitingWifi: Boolean = false,
 )
 
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
@@ -56,7 +59,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     init {
         val models = storage.listModels()
         when {
-            storage.hasPendingDownload() -> watchDownload() // приложение перезапустили во время скачивания
+            storage.hasPendingDownload() -> { // приложение перезапустили во время скачивания
+                storage.resumeDownloadIfNeeded()
+                watchDownload()
+            }
             else -> {
                 // Открываем последнюю использованную модель; если выбора нет — показываем список
                 val auto = storage.lastUsedModel?.takeIf { name -> models.any { it.fileName == name } }
@@ -70,7 +76,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun showLibrary(error: String? = null) {
         _state.update {
-            it.copy(phase = Phase.Library, progress = null, error = error, models = storage.listModels())
+            it.copy(phase = Phase.Library, progress = null, error = error, waitingWifi = false,
+                models = storage.listModels())
         }
     }
 
@@ -116,43 +123,69 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     // ───────── Получение модели ─────────
 
-    fun startDownload() {
+    /**
+     * Нажата кнопка «Скачать». Если мы на Wi-Fi — качаем сразу (и только по Wi-Fi),
+     * иначе спрашиваем: ждать Wi-Fi или продолжить по мобильной сети.
+     */
+    fun requestDownload() {
         if (setupJob?.isActive == true) return
-        storage.enqueueDownload()
+        if (storage.isOnUnmeteredNetwork()) {
+            startDownload(wifiOnly = true)
+        } else {
+            _state.update { it.copy(askNetworkChoice = true) }
+        }
+    }
+
+    fun dismissNetworkChoice() {
+        _state.update { it.copy(askNetworkChoice = false) }
+    }
+
+    fun startDownload(wifiOnly: Boolean) {
+        _state.update { it.copy(askNetworkChoice = false) }
+        if (setupJob?.isActive == true) return
+        storage.startDownload(wifiOnly)
         watchDownload()
+    }
+
+    /** Кнопка на экране ожидания Wi-Fi: не ждать, качать по мобильной сети. */
+    fun continueOnMobile() {
+        if (!storage.hasPendingDownload()) return
+        storage.startDownload(wifiOnly = false) // сервис перезапустится и докачает с того же места
     }
 
     private fun watchDownload() {
         setupJob = viewModelScope.launch {
             _state.update {
-                it.copy(phase = Phase.Downloading, progress = null, error = null,
+                it.copy(phase = Phase.Downloading, progress = null, error = null, waitingWifi = false,
                     progressText = "Подключаюсь к Hugging Face…")
             }
             while (true) {
-                val s = storage.downloadStatus()
-                if (s == null) { // загрузку убрали снаружи
+                val s = DownloadTracker.status.value
+                if (s == null) { // скачивание отменили снаружи
                     storage.cancelDownload()
                     showLibrary()
                     return@launch
                 }
-                when (s.status) {
-                    DownloadManager.STATUS_SUCCESSFUL -> {
-                        storage.finishDownload()
+                when (s.phase) {
+                    DownloadPhase.Done -> {
+                        DownloadTracker.status.value = null
                         loadEngine(ModelStorage.MODEL_FILE_NAME)
                         return@launch
                     }
-                    DownloadManager.STATUS_FAILED -> {
-                        storage.cancelDownload()
-                        showLibrary(
-                            "Не удалось скачать модель (код ${s.reason}). " +
-                                "Проверьте сеть и свободное место, затем повторите."
-                        )
+                    DownloadPhase.Failed -> {
+                        DownloadTracker.status.value = null
+                        showLibrary(s.error ?: "Не удалось скачать модель. Проверьте сеть и свободное место, затем повторите.")
                         return@launch
                     }
-                    DownloadManager.STATUS_PAUSED, DownloadManager.STATUS_PENDING ->
-                        _state.update { it.copy(progress = progressOf(s), progressText = "Ожидание сети… ${sizeText(s.downloadedBytes, s.totalBytes)}") }
-                    else ->
-                        _state.update { it.copy(progress = progressOf(s), progressText = "Скачивание: ${sizeText(s.downloadedBytes, s.totalBytes)}") }
+                    DownloadPhase.WaitingWifi ->
+                        _state.update { it.copy(progress = progressOf(s), waitingWifi = true,
+                            progressText = "Жду Wi-Fi… ${sizeText(s.downloadedBytes, s.totalBytes)}") }
+                    DownloadPhase.WaitingNetwork ->
+                        _state.update { it.copy(progress = progressOf(s), waitingWifi = false,
+                            progressText = "Ожидание сети… ${sizeText(s.downloadedBytes, s.totalBytes)}") }
+                    DownloadPhase.Running ->
+                        _state.update { it.copy(progress = progressOf(s), waitingWifi = false,
+                            progressText = "Скачивание: ${sizeText(s.downloadedBytes, s.totalBytes)}") }
                 }
                 delay(500)
             }

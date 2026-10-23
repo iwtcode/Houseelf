@@ -4,6 +4,12 @@
 
     <!-- Нужен только для скачивания модели с Hugging Face. Сам чат работает офлайн. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Узнать, подключены ли мы к Wi-Fi или к мобильной сети -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Скачивание модели идёт в foreground-сервисе, чтобы работать в фоне -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="true"
@@ -34,6 +40,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".ModelDownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 
 </manifest>
