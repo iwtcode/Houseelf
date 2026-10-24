@@ -1,4 +1,19 @@
 <resources>
     <!-- Название под иконкой и в списке приложений. Houseelf — только технический идентификатор проекта. -->
     <string name="app_name">Карманный домовой</string>
+
+    <!-- Захват текста из других приложений -->
+    <!-- Подпись пункта в меню выделения текста и в списке «Поделиться» -->
+    <string name="capture_label">Домовой</string>
+    <string name="share_target_label">Домовой</string>
+    <!-- Плитка в шторке -->
+    <string name="tile_label">Домовой</string>
+    <string name="tile_subtitle">Из буфера</string>
+    <!-- Ярлык на иконке приложения -->
+    <string name="shortcut_clipboard_short">Из буфера</string>
+    <string name="shortcut_clipboard_long">Домовой: взять текст из буфера</string>
+    <!-- Виджет -->
+    <string name="widget_label">Домовой: из буфера</string>
+    <string name="widget_text">Взять текст из буфера</string>
+    <string name="widget_description">Скопировал текст — нажми, и домовой возьмёт его в мини-чат</string>
 </resources>

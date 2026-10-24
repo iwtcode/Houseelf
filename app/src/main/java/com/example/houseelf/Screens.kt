@@ -626,6 +626,7 @@ fun ChatScreen(
                         when (att) {
                             is ImageAttachment -> ImageThumb(att, 72.dp, onRemove = { onRemoveAttachment(att.id) })
                             is AudioAttachment -> AudioChip(att, onRemove = { onRemoveAttachment(att.id) })
+                            is TextAttachment -> QuoteCard(att, Modifier.widthIn(max = 260.dp), onRemove = { onRemoveAttachment(att.id) })
                         }
                     }
                     if (state.attaching) {
@@ -716,7 +717,7 @@ fun ChatScreen(
 private val CHIPS_OVERLAY_HEIGHT = 50.dp
 
 @Composable
-private fun SuggestionChip(text: String, onClick: () -> Unit) {
+internal fun SuggestionChip(text: String, onClick: () -> Unit) {
     val shape = RoundedCornerShape(20.dp)
     Box(
         Modifier
@@ -870,7 +871,8 @@ private fun AudioChip(att: AudioAttachment, onRemove: (() -> Unit)? = null, onDa
 }
 
 @Composable
-private fun MessageItem(message: ChatMessage, eventActions: EventActions, typing: Boolean) {
+internal fun MessageItem(message: ChatMessage, eventActions: EventActions, typing: Boolean) {
+    val texts = message.attachments.filterIsInstance<TextAttachment>()
     val images = message.attachments.filterIsInstance<ImageAttachment>()
     val audios = message.attachments.filterIsInstance<AudioAttachment>()
     val fromUser = message.fromUser
@@ -881,7 +883,7 @@ private fun MessageItem(message: ChatMessage, eventActions: EventActions, typing
     } else {
         RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomEnd = 20.dp, bottomStart = 6.dp)
     }
-    val hasBubble = images.isNotEmpty() || audios.isNotEmpty() || message.text.isNotEmpty() ||
+    val hasBubble = texts.isNotEmpty() || images.isNotEmpty() || audios.isNotEmpty() || message.text.isNotEmpty() ||
         (!fromUser && message.events.isEmpty())
 
     Column(
@@ -899,6 +901,8 @@ private fun MessageItem(message: ChatMessage, eventActions: EventActions, typing
                     .padding(horizontal = 14.dp, vertical = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                // Выделенный текст из другого приложения — цитатой над сообщением
+                texts.forEach { QuoteCard(it, onDark = fromUser) }
                 if (images.isNotEmpty()) {
                     // Одно фото показываем крупно, несколько — мелкими плитками в ряд
                     val side = when (images.size) { 1 -> 200.dp; 2 -> 130.dp; 3 -> 90.dp; else -> 64.dp }

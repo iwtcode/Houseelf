@@ -365,7 +365,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update {
                     it.copy(phase = Phase.Chat, messages = emptyList(), backend = loaded.backend,
                         activeModel = fileName, loadingModel = null, mediaSupported = loaded.media,
-                        draft = emptyList(), notice = null)
+                        // Текст, который прислали из другого приложения, пока модель грузилась, не теряем
+                        draft = it.draft.filterIsInstance<TextAttachment>(), notice = null)
                 }
             } catch (ce: CancellationException) {
                 throw ce
@@ -495,6 +496,38 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update { it.copy(attaching = false) }
             }
         }
+    }
+
+    /**
+     * Прикрепить текст из другого приложения (выделение, «Поделиться», буфер обмена).
+     * Вложение одно: новый текст заменяет прежний. Вернёт false, если текст пустой.
+     */
+    fun attachText(raw: CharSequence, source: String?, origin: TextOrigin): Boolean {
+        val clean = raw.toString().replace("\r\n", "\n").trim()
+        if (clean.isEmpty()) return false
+        val truncated = clean.length > MAX_CAPTURE_CHARS
+        var text = if (truncated) clean.take(MAX_CAPTURE_CHARS) else clean
+        if (truncated && text.last().isHighSurrogate()) text = text.dropLast(1) // не режем эмодзи пополам
+        val att = TextAttachment(
+            id = nextAttachmentId++,
+            text = text.trimEnd(),
+            source = source?.takeIf { it.isNotBlank() },
+            origin = origin,
+            truncated = truncated,
+        )
+        _state.update { s -> s.copy(draft = s.draft.filter { it !is TextAttachment } + att, notice = null) }
+        return true
+    }
+
+    /** Номер, который получит следующее сообщение: мини-чат показывает только то, что началось после него. */
+    fun peekNextMessageId(): Long = nextId
+
+    /** Загрузить модель, которой пользовались в прошлый раз (или единственную). Для мини-чата без выбора из списка. */
+    fun loadPreferredModel() {
+        val models = storage.listModels()
+        val name = storage.lastUsedModel?.takeIf { n -> models.any { it.fileName == n } }
+            ?: models.firstOrNull()?.fileName
+        if (name != null) selectModel(name) else showNotice("Сначала скачай модель в приложении")
     }
 
     fun removeAttachment(id: Long) {
@@ -752,9 +785,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Интерфейс показал окно запроса — сбрасываем флаг, чтобы не показать его повторно. */
-    fun calendarPermissionRequested() {
+    fun calendarPermissionRequested(): Boolean {
+        // Окон может быть два (главное и мини-чат): запрос показывает только тот, кто успел первым
+        val first = !permissionInFlight
         permissionInFlight = true
         _state.update { it.copy(needCalendarPermission = false) }
+        return first
     }
 
     /** Окно закрыто: записываем ожидавшие события или помечаем их как неудавшиеся. */
@@ -775,14 +811,31 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val parts = mutableListOf<Content>()
         for (a in attachments) if (a is ImageAttachment) parts += Content.ImageBytes(File(a.path).readBytes())
         for (a in attachments) if (a is AudioAttachment) parts += Content.AudioBytes(File(a.path).readBytes())
-        val text = when {
+        val quotes = attachments.filterIsInstance<TextAttachment>()
+        val typed = when {
             prompt.isNotEmpty() -> prompt
             // Голосовое сообщение без текста — просим ответить на то, что сказано
             attachments.any { it is AudioAttachment && it.isVoice } -> VOICE_HINT
+            // Только выделенный текст — просим разобрать его, ничего сразу не внося в календарь
+            quotes.isNotEmpty() -> QUOTE_HINT
             else -> ""
         }
+        // Выделенный текст идёт перед просьбой и отделён кавычками, чтобы модель не приняла его за команду
+        val text = buildString {
+            for (q in quotes) append(quoteBlock(q)).append("\n\n")
+            append(typed)
+        }.trim()
         if (text.isNotEmpty()) parts += Content.Text(text)
         return parts
+    }
+
+    private fun quoteBlock(q: TextAttachment): String {
+        val intro = when {
+            q.origin == TextOrigin.Clipboard -> "Пользователь скопировал текст:"
+            q.source != null -> "Пользователь передал текст из приложения «${q.source}»:"
+            else -> "Пользователь передал текст:"
+        }
+        return "$intro\n\"\"\"\n${q.text}\n\"\"\""
     }
 
     fun newChat() {
@@ -825,6 +878,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         /** Сколько изображений можно приложить к одному сообщению. */
         const val MAX_IMAGES = 4
 
+        /** Сколько символов выделенного текста берём в сообщение: длиннее модель на телефоне не осилит. */
+        const val MAX_CAPTURE_CHARS = 5_000
+
         private const val SYSTEM_PROMPT =
             "Ты — Карманный домовой, дружелюбный помощник. Отвечай на языке собеседника, коротко и по делу. " +
                 "Оформляй ответ в Markdown, но без излишеств: **жирным** выделяй главное, для перечислений используй списки " +
@@ -845,6 +901,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 "с этим номером. Если подходящих событий несколько — спроси, какое именно. " +
                 "Не удаляй и не меняй события, о которых пользователь не просил. " +
                 "После вызова сообщи пользователю результат так, как его описывает ответ инструмента."
+
+        private const val QUOTE_HINT =
+            "Скажи, о чём этот текст, и перечисли дела, встречи и сроки, если они в нём есть. " +
+                "Ничего не вноси в календарь, пока я не попрошу."
 
         private const val VOICE_HINT = "Это голосовое сообщение от пользователя. Ответь на него."
     }

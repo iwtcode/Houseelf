@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Статический ярлык на иконке приложения: зажать иконку → «Из буфера» -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="capture_clipboard"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_clipboard_short"
+        android:shortcutLongLabel="@string/shortcut_clipboard_long">
+        <intent
+            android:action="com.example.houseelf.action.CAPTURE_CLIPBOARD"
+            android:targetClass="com.example.houseelf.CaptureActivity"
+            android:targetPackage="com.example.houseelf" />
+    </shortcut>
+</shortcuts>

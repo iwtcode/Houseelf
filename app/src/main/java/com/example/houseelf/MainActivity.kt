@@ -13,7 +13,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.viewModels
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
@@ -57,11 +56,19 @@ import com.example.houseelf.ui.theme.Duo
 import com.example.houseelf.ui.theme.HouseelfTheme
 
 class MainActivity : ComponentActivity() {
-    private val chatViewModel: ChatViewModel by viewModels()
+    // Один чат на весь процесс: его же использует мини-чат поверх других приложений (CaptureActivity)
+    private val chatViewModel: ChatViewModel by lazy { sharedChatViewModel(application) }
+
+    /** Растёт каждый раз, когда из мини-чата просят открыть именно чат, а не «Сегодня». */
+    private var openChatTick by mutableIntStateOf(0)
 
     @OptIn(ExperimentalLayoutApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (savedInstanceState == null) {
+            if (intent?.getBooleanExtra(EXTRA_OPEN_CHAT, false) == true) openChatTick++
+            CaptureSetup.offerQuickTile(this) // один раз: плитка «Домовой» в шторке
+        }
         // Тема приложения всегда светлая, поэтому и значки в системных панелях всегда тёмные
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.light(AndroidColor.TRANSPARENT, AndroidColor.TRANSPARENT),
@@ -79,10 +86,17 @@ class MainActivity : ComponentActivity() {
                             // который перестраивает весь экран на каждом кадре и «спотыкается» в конце.
                             .windowInsetsPadding(WindowInsets.imeAnimationTarget),
                         vm = chatViewModel,
+                        openChatTick = openChatTick,
                     )
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_OPEN_CHAT, false)) openChatTick++
     }
 
     override fun onStop() {
@@ -90,6 +104,11 @@ class MainActivity : ComponentActivity() {
         // В фоне Android глушит микрофон: сохраняем то, что успели записать.
         // При повороте экрана запись не прерываем.
         if (!isChangingConfigurations) chatViewModel.stopRecording(discard = false)
+    }
+
+    companion object {
+        /** Открыть чат, а не экран «Сегодня» (из мини-чата по кнопке «Открыть в приложении»). */
+        const val EXTRA_OPEN_CHAT = "com.example.houseelf.extra.OPEN_CHAT"
     }
 }
 
@@ -125,11 +144,13 @@ private fun screenTransition(from: AppScreen, to: AppScreen, direction: Int): Co
 }
 
 @Composable
-fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel()) {
+fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel(), openChatTick: Int = 0) {
     val state by vm.state.collectAsState()
 
     // «Сегодня» — домашний экран: открывается вместо чата, пока человек сам не зашёл в «Домовой»
     var showToday by rememberSaveable { mutableStateOf(true) }
+    // Мини-чат попросил открыть чат: уходим с «Сегодня»
+    LaunchedEffect(openChatTick) { if (openChatTick > 0) showToday = false }
     // Меняется, когда пользователь ответил на запрос календаря на экране «Сегодня»
     var calendarTick by remember { mutableIntStateOf(0) }
 
@@ -220,9 +241,9 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel()) 
         vm.onCalendarPermissionResult()
     }
     LaunchedEffect(state.needCalendarPermission) {
-        if (state.needCalendarPermission) {
-            vm.calendarPermissionRequested()
-            calendarPermission.launch(CALENDAR_PERMISSIONS)
+        // Запрос показывает окно, которое сейчас на виду; второе (например, мини-чат) его не дублирует
+        if (state.needCalendarPermission && context.isActivityStarted()) {
+            if (vm.calendarPermissionRequested()) calendarPermission.launch(CALENDAR_PERMISSIONS)
         }
     }
     val todayCalendarPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {

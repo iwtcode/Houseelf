@@ -36,6 +36,35 @@ data class AudioAttachment(
     val isVoice: Boolean,
 ) : Attachment
 
+/** Откуда пришёл текст. */
+enum class TextOrigin { Selection, Share, Clipboard }
+
+/**
+ * Текст из другого приложения — выделенный, отправленный через «Поделиться» или скопированный.
+ * Файла нет: текст короткий (не длиннее [ChatViewModel.MAX_CAPTURE_CHARS]) и лежит прямо в сообщении.
+ */
+data class TextAttachment(
+    override val id: Long,
+    val text: String,
+    /** Название приложения-источника («Telegram») или null, если система его не сообщила. */
+    val source: String?,
+    val origin: TextOrigin,
+    /** Исходный текст был длиннее лимита, взято только начало. */
+    val truncated: Boolean = false,
+    override val path: String = "",
+) : Attachment {
+    /** Подпись над цитатой. */
+    fun caption(): String {
+        val base = when {
+            origin == TextOrigin.Clipboard -> "Буфер обмена"
+            source != null -> "Из «$source»"
+            origin == TextOrigin.Share -> "Отправлено через «Поделиться»"
+            else -> "Выделенный текст"
+        }
+        return if (truncated) "$base · начало текста" else base
+    }
+}
+
 fun formatDuration(ms: Long): String {
     val total = ms / 1000
     return "${total / 60}:${(total % 60).toString().padStart(2, '0')}"

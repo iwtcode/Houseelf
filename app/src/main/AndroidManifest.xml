@@ -18,6 +18,7 @@
     <uses-permission android:name="android.permission.WRITE_CALENDAR" />
 
     <application
+        android:name=".HouseelfApplication"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -45,7 +46,74 @@
 
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- Ярлык на иконке приложения: «Из буфера». Его можно вытащить на рабочий стол -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
+
+        <!--
+            Мини-чат поверх любого приложения. Три входа:
+            1) меню выделения текста (PROCESS_TEXT), 2) «Поделиться» (SEND) и ярлык прямой отправки,
+            3) буфер обмена: плитка в шторке, ярлык и виджет запускают активити с действием CAPTURE_CLIPBOARD.
+            Своя задача без истории в «недавних»: после закрытия пользователь остаётся в исходном приложении.
+        -->
+        <activity
+            android:name=".CaptureActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:label="@string/capture_label"
+            android:launchMode="singleTask"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Houseelf.Overlay"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter android:label="@string/capture_label">
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+
+            <!-- Цель прямой отправки: домовой в верхнем ряду «Поделиться» -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/share_targets" />
+        </activity>
+
+        <!-- Плитка «Домовой» в шторке быстрых настроек -->
+        <service
+            android:name=".ClipboardTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_clipboard"
+            android:label="@string/tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <!-- Виджет на рабочий стол -->
+        <receiver
+            android:name=".ClipboardWidgetProvider"
+            android:exported="true"
+            android:label="@string/widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_capture_info" />
+        </receiver>
 
         <service
             android:name=".ModelDownloadService"
