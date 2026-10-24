@@ -538,6 +538,10 @@ fun ChatScreen(
         }
         Box(Modifier.fillMaxWidth().height(2.dp).background(Duo.Line))
 
+        // Быстрые подсказки: после ответа домового или в пустом чате. Остаются, пока человек печатает.
+        val showChips = !state.generating && !state.recording &&
+            (state.messages.isEmpty() || state.messages.last().fromUser.not())
+
         // Сообщения
         Box(Modifier.weight(1f).fillMaxWidth()) {
             if (state.messages.isEmpty()) {
@@ -559,7 +563,11 @@ fun ChatScreen(
                 state = listState,
                 reverseLayout = true,
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 18.dp, bottom = 12.dp),
+                // Снизу оставляем место под подсказки, чтобы они не закрывали последнее сообщение
+                contentPadding = PaddingValues(
+                    start = 16.dp, end = 16.dp, top = 18.dp,
+                    bottom = if (showChips) CHIPS_OVERLAY_HEIGHT + 12.dp else 12.dp,
+                ),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 val lastId = state.messages.lastOrNull()?.id
@@ -567,21 +575,26 @@ fun ChatScreen(
                     MessageItem(message, eventActions, typing = state.generating && message.id == lastId)
                 }
             }
-        }
 
-        // Быстрые подсказки: после ответа домового или в пустом чате
-        val showChips = input.isEmpty() && !state.generating && !state.recording &&
-            (state.messages.isEmpty() || state.messages.last().fromUser.not())
-        if (showChips) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                SuggestionChip("Что на сегодня?") { submit("Что на сегодня?") }
-                SuggestionChip("Разбить дело на шаги") { submit("Разбей моё дело на шаги") }
+            // Без своего фона: сообщения видны сквозь полосу подсказок
+            if (showChips) {
+                Row(
+                    Modifier
+                        .align(Alignment.BottomStart)
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    // Набранный текст не трогаем: подсказка отправляется отдельно
+                    val sendChip: (String) -> Unit = { text ->
+                        onSend(text)
+                        focusManager.clearFocus()
+                        keyboard?.hide()
+                    }
+                    SuggestionChip("Что на сегодня?") { sendChip("Что на сегодня?") }
+                    SuggestionChip("Разбить дело на шаги") { sendChip("Разбей моё дело на шаги") }
+                }
             }
         }
 
@@ -698,6 +711,9 @@ fun ChatScreen(
         }
     }
 }
+
+/** Высота полосы подсказок над полем ввода: сама подсказка (40) и отступ под ней (10). */
+private val CHIPS_OVERLAY_HEIGHT = 50.dp
 
 @Composable
 private fun SuggestionChip(text: String, onClick: () -> Unit) {
