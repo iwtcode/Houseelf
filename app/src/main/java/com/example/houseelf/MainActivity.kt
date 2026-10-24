@@ -27,10 +27,13 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.imeAnimationTarget
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -56,6 +59,7 @@ import com.example.houseelf.ui.theme.HouseelfTheme
 class MainActivity : ComponentActivity() {
     private val chatViewModel: ChatViewModel by viewModels()
 
+    @OptIn(ExperimentalLayoutApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Тема приложения всегда светлая, поэтому и значки в системных панелях всегда тёмные
@@ -70,7 +74,10 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier
                             .padding(innerPadding)
                             .consumeWindowInsets(innerPadding)
-                            .imePadding(),
+                            // Обычное поведение клавиатуры: экран сразу занимает итоговый размер,
+                            // а сама клавиатура выезжает/уезжает системной анимацией. Без imePadding(),
+                            // который перестраивает весь экран на каждом кадре и «спотыкается» в конце.
+                            .windowInsetsPadding(WindowInsets.imeAnimationTarget),
                         vm = chatViewModel,
                     )
                 }

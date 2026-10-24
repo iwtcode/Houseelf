@@ -277,6 +277,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     DownloadPhase.WaitingNetwork ->
                         _state.update { it.copy(progress = progressOf(s), waitingWifi = false,
                             progressText = "Ожидание сети… ${sizeText(s.downloadedBytes, s.totalBytes)}") }
+                    DownloadPhase.Retrying ->
+                        _state.update { it.copy(progress = progressOf(s), waitingWifi = false,
+                            progressText = "Повторное подключение… ${sizeText(s.downloadedBytes, s.totalBytes)}") }
                     DownloadPhase.Running ->
                         _state.update { it.copy(progress = progressOf(s), waitingWifi = false,
                             progressText = "Скачивание: ${sizeText(s.downloadedBytes, s.totalBytes)}") }

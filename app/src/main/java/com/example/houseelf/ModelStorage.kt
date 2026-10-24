@@ -19,6 +19,7 @@ enum class DownloadPhase {
     WaitingNetwork, // нет сети
     WaitingWifi,    // ждём Wi-Fi (пользователь выбрал не качать по мобильной сети)
     Running,
+    Retrying,       // сеть есть, но соединение не удалось — пробуем ещё раз
     Done,
     Failed,
 }
@@ -133,7 +134,9 @@ class ModelStorage(private val context: Context) {
         val cm = context.getSystemService(ConnectivityManager::class.java) ?: return false
         val network = cm.activeNetwork ?: return false
         val caps = cm.getNetworkCapabilities(network) ?: return false
-        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+        if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return false
+        // isActiveNetworkMetered учитывает и VPN: у VPN-сети собственных флагов «без учёта трафика» может не быть
+        return !cm.isActiveNetworkMetered
     }
 
     /**

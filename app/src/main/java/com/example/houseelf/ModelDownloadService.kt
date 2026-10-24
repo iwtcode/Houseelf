@@ -8,9 +8,7 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
-import android.net.Network
 import android.net.NetworkCapabilities
-import android.net.NetworkRequest
 import android.os.IBinder
 import android.os.SystemClock
 import androidx.core.app.ServiceCompat
@@ -21,12 +19,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
@@ -43,6 +38,9 @@ private class FatalDownloadException(message: String) : IOException(message)
  * Почему не DownloadManager: большие файлы он сам ставит на паузу «до Wi-Fi», когда
  * телефон в мобильной сети, и приложение не может это отменить. Здесь решение принимает
  * пользователь: [ModelStorage.downloadWifiOnly] = true — ждём Wi-Fi, false — качаем по любой сети.
+ *
+ * Соединение идёт через сеть по умолчанию (так работает и VPN); «только Wi-Fi» проверяется по
+ * признаку платной сети.
  *
  * Файл пишется в *.part и докачивается заголовком Range после обрыва сети или перезапуска.
  */
@@ -114,17 +112,22 @@ class ModelDownloadService : Service() {
     private suspend fun runDownload() {
         val part = storage.partFile()
         val target = storage.modelFile(ModelStorage.MODEL_FILE_NAME)
+        val cm = getSystemService(ConnectivityManager::class.java)
         var failures = 0
+        var lastError = ""
         total = -1L
 
         while (true) {
             currentCoroutineContext().ensureActive()
             val wifiOnly = storage.downloadWifiOnly
-            publish(if (wifiOnly) DownloadPhase.WaitingWifi else DownloadPhase.WaitingNetwork, part.length())
-            val network = awaitNetwork(wifiOnly)
+            if (!networkReady(cm, wifiOnly)) {
+                publish(if (wifiOnly) DownloadPhase.WaitingWifi else DownloadPhase.WaitingNetwork, part.length())
+                awaitNetwork(cm, wifiOnly)
+            }
+            if (failures > 0) publish(DownloadPhase.Retrying, part.length())
             val sizeBefore = part.length()
             try {
-                downloadOnce(network, part)
+                downloadOnce(cm, wifiOnly, part)
                 target.delete()
                 if (!part.renameTo(target)) throw FatalDownloadException("Не удалось сохранить файл модели")
                 finish(
@@ -142,25 +145,31 @@ class ModelDownloadService : Service() {
                 )
                 return
             } catch (e: IOException) {
+                lastError = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
                 if (part.length() > sizeBefore) failures = 0 // что-то докачали — это не «глухая» ошибка
                 failures++
                 if (failures > MAX_FAILURES) {
-                    val msg = "Не удалось скачать модель: проблемы с сетью. Повторите позже — загрузка продолжится с того же места."
+                    val msg = "Не удалось скачать модель: $lastError. Проверьте интернет или VPN и повторите — " +
+                        "загрузка продолжится с того же места."
                     finish(DownloadStatus(DownloadPhase.Failed, part.length(), total, msg), "Не удалось скачать модель", msg, ok = false)
                     return
                 }
+                publish(DownloadPhase.Retrying, part.length())
                 delay(RETRY_DELAY_MS * failures.coerceAtMost(5))
             }
         }
     }
 
     /** Одна попытка: докачивает файл до конца. Бросает IOException при обрыве. */
-    private suspend fun downloadOnce(network: Network, part: File) {
+    private suspend fun downloadOnce(cm: ConnectivityManager, wifiOnly: Boolean, part: File) {
         var offset = if (part.exists()) part.length() else 0L
-        val conn = network.openConnection(URL(ModelStorage.MODEL_URL)) as HttpURLConnection
+        // Обычное соединение через сеть по умолчанию — именно по ней идёт и трафик VPN.
+        // Раньше соединение привязывалось к конкретной сети (Network.openConnection) и в обход VPN.
+        val conn = URL(ModelStorage.MODEL_URL).openConnection() as HttpURLConnection
         try {
-            conn.connectTimeout = 15_000
+            conn.connectTimeout = 30_000 // через VPN и в эмуляторе соединение устанавливается дольше
             conn.readTimeout = 30_000
+            conn.instanceFollowRedirects = true
             // Без сжатия: иначе пропадает Content-Length и ломается докачка
             conn.setRequestProperty("Accept-Encoding", "identity")
             if (offset > 0) conn.setRequestProperty("Range", "bytes=$offset-")
@@ -219,6 +228,8 @@ class ModelDownloadService : Service() {
                         if (now - lastPublish >= 500) {
                             lastPublish = now
                             publish(DownloadPhase.Running, done)
+                            // «Только Wi-Fi»: если сеть стала платной (Wi-Fi пропал), останавливаемся и ждём Wi-Fi
+                            if (wifiOnly && cm.isActiveNetworkMetered) throw IOException("Wi-Fi пропал")
                         }
                     }
                     publish(DownloadPhase.Running, done)
@@ -233,28 +244,24 @@ class ModelDownloadService : Service() {
     private fun parseTotal(contentRange: String?): Long? =
         contentRange?.substringAfterLast('/')?.trim()?.toLongOrNull()
 
-    /**
-     * Ждёт подходящую сеть. wifiOnly — только сеть без учёта трафика (Wi-Fi),
-     * иначе любая сеть с интернетом. Соединение привязывается к найденной сети, поэтому
-     * при «только Wi-Fi» трафик не уйдёт в мобильную сеть, даже если система так захочет.
-     */
-    private suspend fun awaitNetwork(wifiOnly: Boolean): Network {
-        val cm = getSystemService(ConnectivityManager::class.java)
-        if (!wifiOnly) cm.activeNetwork?.let { return it }
+    /** Есть ли сейчас подходящая сеть: любая с интернетом или (wifiOnly) только без учёта трафика. */
+    private fun networkReady(cm: ConnectivityManager, wifiOnly: Boolean): Boolean {
+        val network = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(network) ?: return false
+        if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return false
+        // isActiveNetworkMetered учитывает VPN: у VPN-сети своих флагов «без учёта трафика» может не быть
+        return !wifiOnly || !cm.isActiveNetworkMetered
+    }
 
-        val request = NetworkRequest.Builder()
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .apply { if (wifiOnly) addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) }
-            .build()
-        return callbackFlow<Network> {
-            val callback = object : ConnectivityManager.NetworkCallback() {
-                override fun onAvailable(network: Network) {
-                    trySend(network)
-                }
-            }
-            cm.registerNetworkCallback(request, callback)
-            awaitClose { runCatching { cm.unregisterNetworkCallback(callback) } }
-        }.first()
+    /**
+     * Ждёт подходящую сеть, проверяя её раз в секунду. Проверка обычным опросом надёжнее
+     * NetworkCallback: в эмуляторе и с VPN колбэки приходят не всегда, и ожидание зависало навсегда.
+     * Само соединение потом идёт через сеть по умолчанию, а не привязывается к конкретной.
+     */
+    private suspend fun awaitNetwork(cm: ConnectivityManager, wifiOnly: Boolean) {
+        while (!networkReady(cm, wifiOnly)) {
+            delay(NETWORK_POLL_MS)
+        }
     }
 
     // ───────── Состояние и уведомления ─────────
@@ -265,6 +272,7 @@ class ModelDownloadService : Service() {
         val text = when (phase) {
             DownloadPhase.WaitingWifi -> "Жду Wi-Fi…"
             DownloadPhase.WaitingNetwork -> "Жду сеть…"
+            DownloadPhase.Retrying -> "Повторное подключение…"
             else -> sizeText(done, total)
         }
         notifications.notify(NOTIFICATION_ID, progressNotification(text, done, total))
@@ -320,5 +328,6 @@ class ModelDownloadService : Service() {
         private const val RESULT_NOTIFICATION_ID = 2
         private const val MAX_FAILURES = 8
         private const val RETRY_DELAY_MS = 3_000L
+        private const val NETWORK_POLL_MS = 1_000L
     }
 }
