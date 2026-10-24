@@ -172,7 +172,7 @@ fun LibraryScreen(
                             )
                             SettingRow(
                                 title = "Спрашивать перед действиями",
-                                hint = "Показать карточку с кнопкой «Добавить» вместо записи в календарь",
+                                hint = "Карточка с кнопками вместо того, чтобы сразу добавлять, менять и удалять события",
                                 checked = confirmActions,
                                 onChange = onConfirmActionsChange,
                                 divider = false,
@@ -906,12 +906,14 @@ private fun MessageItem(message: ChatMessage, eventActions: EventActions, typing
     }
 }
 
-/** Карточка события, которое модель вносит в календарь. */
+/** Карточка события, которое модель вносит в календарь, меняет или удаляет. */
 @Composable
 private fun EventCard(ev: EventProposal, actions: EventActions, modifier: Modifier = Modifier) {
-    val border = when (ev.status) {
-        EventStatus.Failed -> Duo.Red
-        EventStatus.Dismissed -> Duo.Line
+    val delete = ev.action == EventAction.Delete
+    val border = when {
+        ev.status == EventStatus.Failed -> Duo.Red
+        ev.status == EventStatus.Dismissed -> Duo.Line
+        delete -> Duo.Red
         else -> Duo.Teal
     }
     DuoCard(modifier, borderColor = border) {
@@ -921,14 +923,41 @@ private fun EventCard(ev: EventProposal, actions: EventActions, modifier: Modifi
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 IconBadge(
-                    DuoIcons.Calendar,
-                    background = if (ev.status == EventStatus.Dismissed) Duo.Track else Duo.TealSoft,
-                    tint = if (ev.status == EventStatus.Dismissed) Duo.Muted else Duo.TealDark,
+                    if (delete) DuoIcons.Trash else DuoIcons.Calendar,
+                    background = when {
+                        ev.status == EventStatus.Dismissed -> Duo.Track
+                        delete -> Duo.RedSoft
+                        else -> Duo.TealSoft
+                    },
+                    tint = when {
+                        ev.status == EventStatus.Dismissed -> Duo.Muted
+                        delete -> Duo.Red
+                        else -> Duo.TealDark
+                    },
                 )
                 Column(Modifier.weight(1f)) {
+                    when (ev.action) {
+                        EventAction.Update ->
+                            Text("Изменение события", style = MaterialTheme.typography.labelSmall, color = Duo.Muted)
+                        EventAction.Delete ->
+                            Text("Удаление события", style = MaterialTheme.typography.labelSmall, color = Duo.Red)
+                        EventAction.Add -> {}
+                    }
                     Text(ev.title, style = MaterialTheme.typography.titleMedium)
-                    Text(formatEventWhen(ev), style = MaterialTheme.typography.bodySmall, color = Duo.Muted)
+                    Text(
+                        if (ev.recurring) "Повторяющееся событие" else formatEventWhen(ev),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Duo.Muted,
+                    )
                 }
+            }
+            if (ev.before != null) {
+                Text(
+                    "Было: ${ev.before}",
+                    Modifier.padding(top = 8.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Duo.Muted,
+                )
             }
             if (ev.location != null) {
                 Row(
@@ -948,12 +977,33 @@ private fun EventCard(ev: EventProposal, actions: EventActions, modifier: Modifi
                     color = Duo.Muted,
                 )
             }
+            if (delete && ev.recurring && ev.status == EventStatus.Pending) {
+                Text(
+                    "Будут удалены все повторы этого события",
+                    Modifier.padding(top = 6.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Duo.Red,
+                )
+            }
 
             Spacer(Modifier.height(12.dp))
             when (ev.status) {
                 EventStatus.Pending -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    DuoButton("Добавить", { actions.onConfirm(ev.id) }, Modifier.weight(1f))
-                    DuoButton("Не то", { actions.onDismiss(ev.id) }, Modifier.weight(1f), kind = DuoKind.Outline)
+                    val confirmText = when (ev.action) {
+                        EventAction.Add -> "Добавить"
+                        EventAction.Update -> "Изменить"
+                        EventAction.Delete -> "Удалить"
+                    }
+                    val dismissText = if (delete) "Оставить" else "Не то"
+                    // Удаление нельзя отменить, поэтому главной делаем безопасную кнопку
+                    DuoButton(
+                        confirmText, { actions.onConfirm(ev.id) }, Modifier.weight(1f),
+                        kind = if (delete) DuoKind.Outline else DuoKind.Primary,
+                    )
+                    DuoButton(
+                        dismissText, { actions.onDismiss(ev.id) }, Modifier.weight(1f),
+                        kind = if (delete) DuoKind.Primary else DuoKind.Outline,
+                    )
                 }
                 EventStatus.NeedsPermission ->
                     Text("Жду разрешение на доступ к календарю…", style = MaterialTheme.typography.bodySmall, color = Duo.Muted)
@@ -964,12 +1014,17 @@ private fun EventCard(ev: EventProposal, actions: EventActions, modifier: Modifi
                 ) {
                     Icon(DuoIcons.Check, contentDescription = null, tint = Duo.Teal, modifier = Modifier.size(22.dp))
                     Text(
-                        "Добавлено в календарь",
+                        when (ev.action) {
+                            EventAction.Add -> "Добавлено в календарь"
+                            EventAction.Update -> "Изменено в календаре"
+                            EventAction.Delete -> "Удалено из календаря"
+                        },
                         Modifier.weight(1f),
                         style = MaterialTheme.typography.labelLarge.copy(fontSize = 14.sp),
                         color = Duo.TealDark,
                     )
-                    if (ev.calendarEventId != null) {
+                    // Удалённое событие открывать уже нечем
+                    if (ev.calendarEventId != null && !delete) {
                         DuoButton(
                             "Открыть",
                             { actions.onView(ev.calendarEventId) },
@@ -980,14 +1035,23 @@ private fun EventCard(ev: EventProposal, actions: EventActions, modifier: Modifi
                     }
                 }
                 EventStatus.Failed -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    val verb = when (ev.action) {
+                        EventAction.Add -> "добавить"
+                        EventAction.Update -> "изменить"
+                        EventAction.Delete -> "удалить"
+                    }
                     Text(
-                        "Не удалось добавить: ${ev.error ?: "неизвестная ошибка"}",
+                        "Не удалось $verb: ${ev.error ?: "неизвестная ошибка"}",
                         color = Duo.Red,
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         DuoButton("Повторить", { actions.onConfirm(ev.id) }, Modifier.weight(1f))
-                        DuoButton("В календаре", { actions.onOpenForm(ev) }, Modifier.weight(1f), kind = DuoKind.Outline)
+                        if (ev.action == EventAction.Add) {
+                            DuoButton("В календаре", { actions.onOpenForm(ev) }, Modifier.weight(1f), kind = DuoKind.Outline)
+                        } else if (ev.calendarEventId != null) {
+                            DuoButton("Открыть", { actions.onView(ev.calendarEventId) }, Modifier.weight(1f), kind = DuoKind.Outline)
+                        }
                     }
                 }
                 EventStatus.Dismissed ->

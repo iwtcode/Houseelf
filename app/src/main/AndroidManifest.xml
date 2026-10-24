@@ -13,7 +13,7 @@
     <!-- Голосовой ввод: запись голоса, который модель слушает напрямую -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
-    <!-- Модель сама вносит события в календарь (инструмент addCalendarEvent) -->
+    <!-- Модель сама смотрит календарь, вносит, меняет и удаляет события (инструменты CalendarTools) -->
     <uses-permission android:name="android.permission.READ_CALENDAR" />
     <uses-permission android:name="android.permission.WRITE_CALENDAR" />
 

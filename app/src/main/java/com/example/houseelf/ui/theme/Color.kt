@@ -16,6 +16,7 @@ object Duo {
 
     val Red = Color(0xFFD13B2E)
     val Cherry = Color(0xFFE5483A)
+    val RedSoft = Color(0xFFFBE3E0)
 
     val Ink = Color(0xFF1F2D2E)
     val Muted = Color(0xFF5B6B6C)

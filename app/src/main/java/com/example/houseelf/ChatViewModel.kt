@@ -8,6 +8,7 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.net.Uri
+import android.os.Looper
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.ai.edge.litertlm.*
@@ -23,6 +24,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.max
 
@@ -96,10 +99,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val nextEventId = AtomicLong(0)
     @Volatile private var currentBotId = -1L // ответ, в который попадут карточки событий
     @Volatile private var permissionInFlight = false // системное окно запроса разрешения уже на экране
+    @Volatile private var permissionWaiter: CompletableFuture<Boolean>? = null // инструмент ждёт ответа на запрос
 
     // Инструменты, доступные модели. Вызываются из потока генерации.
     private val calendarTools = CalendarTools(
+        context = app.applicationContext,
         nextId = { nextEventId.incrementAndGet() },
+        ensurePermission = { awaitCalendarPermission() },
         handler = { handleProposal(it) },
     )
 
@@ -628,30 +634,45 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Модель вызвала инструмент «добавить событие». Выполняется в потоке генерации.
+     * Модель вызвала инструмент: добавить, изменить или удалить событие. Выполняется в потоке генерации.
      * Возвращает ответ для модели: получилось ли и что сказать пользователю.
      */
     private fun handleProposal(ev: EventProposal): Pair<Boolean, String> {
         val app = getApplication<Application>()
         if (_state.value.confirmActions) {
             addEvent(ev.copy(status = EventStatus.Pending))
-            return true to "The event is shown to the user as a card with Add and Reject buttons. " +
-                "It is NOT in the calendar yet. Briefly say what you prepared and ask the user to confirm with the button."
+            return true to when (ev.action) {
+                EventAction.Add -> "The event is shown to the user as a card with Add and Reject buttons. " +
+                    "It is NOT in the calendar yet. Briefly say what you prepared and ask the user to confirm with the button."
+                EventAction.Update -> "The change is shown to the user as a card with Change and Reject buttons. " +
+                    "The event is NOT changed yet. Briefly say what you want to change and ask the user to confirm with the button."
+                EventAction.Delete -> "The deletion is shown to the user as a card with Delete and Keep buttons. " +
+                    "The event is NOT deleted yet. Briefly say which event you want to delete and ask the user to confirm with the button."
+            }
         }
         if (!hasCalendarPermission(app)) {
             addEvent(ev.copy(status = EventStatus.NeedsPermission))
             requestCalendarPermission()
-            return true to "The user is being asked to allow calendar access; the event will be added " +
-                "automatically as soon as they allow it. Briefly say that you are adding the event."
+            return true to "The user is being asked to allow calendar access; the action will be done " +
+                "automatically as soon as they allow it. Briefly say that you are doing it."
         }
         return try {
-            val calendarEventId = insertCalendarEvent(app, ev)
+            val calendarEventId = applyCalendarAction(app, ev)
             addEvent(ev.copy(status = EventStatus.Added, calendarEventId = calendarEventId))
-            true to "The event '${ev.title}' has been added to the user's calendar. Briefly confirm this."
+            true to when (ev.action) {
+                EventAction.Add -> "The event '${ev.title}' has been added to the user's calendar. Briefly confirm this."
+                EventAction.Update -> "The event '${ev.title}' has been changed in the user's calendar. Briefly confirm what changed."
+                EventAction.Delete -> "The event '${ev.title}' has been deleted from the user's calendar. Briefly confirm this."
+            }
         } catch (t: Throwable) {
             val reason = t.message ?: t.javaClass.simpleName
             addEvent(ev.copy(status = EventStatus.Failed, error = reason))
-            false to "Could not add the event: $reason. Tell the user it failed."
+            val what = when (ev.action) {
+                EventAction.Add -> "add the event"
+                EventAction.Update -> "change the event"
+                EventAction.Delete -> "delete the event"
+            }
+            false to "Could not $what: $reason. Tell the user it failed."
         }
     }
 
@@ -674,7 +695,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Нажата «Добавить» на карточке (режим с подтверждением) или «Повторить» после ошибки. */
+    /** Нажата кнопка подтверждения на карточке (добавить, изменить, удалить) или «Повторить» после ошибки. */
     fun confirmEvent(eventId: Long) {
         val ev = findEvent(eventId) ?: return
         if (ev.status == EventStatus.Added || ev.status == EventStatus.NeedsPermission) return
@@ -695,13 +716,32 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val ev = findEvent(eventId) ?: return@launch
             if (ev.status == EventStatus.Added) return@launch
             try {
-                val calendarEventId = withContext(Dispatchers.IO) { insertCalendarEvent(getApplication(), ev) }
+                val calendarEventId = withContext(Dispatchers.IO) { applyCalendarAction(getApplication(), ev) }
                 updateEvent(eventId) { it.copy(status = EventStatus.Added, calendarEventId = calendarEventId, error = null) }
             } catch (e: CancellationException) {
                 throw e
             } catch (t: Throwable) {
                 updateEvent(eventId) { it.copy(status = EventStatus.Failed, error = t.message ?: t.javaClass.simpleName) }
             }
+        }
+    }
+
+    /**
+     * Для инструментов, которым результат нужен сразу (чтение, изменение, удаление): если доступа к календарю
+     * нет — просим его и ждём ответа пользователя. Вызывается из потока генерации, не из главного.
+     */
+    private fun awaitCalendarPermission(): Boolean {
+        val app = getApplication<Application>()
+        if (hasCalendarPermission(app)) return true
+        val waiter = permissionWaiter?.takeIf { !it.isDone }
+            ?: CompletableFuture<Boolean>().also { permissionWaiter = it }
+        requestCalendarPermission()
+        if (Looper.myLooper() == Looper.getMainLooper()) return false // главный поток блокировать нельзя
+        return try {
+            waiter.get(PERMISSION_WAIT_SECONDS, TimeUnit.SECONDS)
+        } catch (_: Throwable) {
+            _state.update { it.copy(needCalendarPermission = false) } // окно так и не показали — не показываем позже
+            hasCalendarPermission(app)
         }
     }
 
@@ -722,6 +762,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         permissionInFlight = false
         // Смотрим на реальное состояние разрешения, а не на ответ окна: он бывает пустым, если окно прервали
         val granted = hasCalendarPermission(getApplication())
+        permissionWaiter?.complete(granted)
         val waiting = _state.value.messages.flatMap { it.events }.filter { it.status == EventStatus.NeedsPermission }
         for (ev in waiting) {
             if (granted) insertEventAsync(ev.id)
@@ -787,10 +828,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         private const val SYSTEM_PROMPT =
             "Ты — Карманный домовой, дружелюбный помощник. Отвечай на языке собеседника, коротко и по делу."
 
+        private const val PERMISSION_WAIT_SECONDS = 120L
+
         private const val CALENDAR_PROMPT =
             "Если пользователь просит внести событие, встречу, напоминание или дело в календарь — " +
                 "вызови инструмент добавления события, заранее пересчитав «завтра», «в пятницу» и подобное " +
                 "в точные даты. Если не хватает названия или даты — сначала коротко уточни. " +
+                "Если пользователь спрашивает, что запланировано (на сегодня, завтра, неделю, месяц или другую дату), " +
+                "или свободен ли день — вызови инструмент просмотра календаря и перескажи только то, что он вернул, " +
+                "ничего не выдумывай. " +
+                "Чтобы перенести, переименовать или изменить событие, а также чтобы удалить его, сначала найди событие " +
+                "инструментом просмотра календаря (в ответе есть номер id), затем вызови инструмент изменения или удаления " +
+                "с этим номером. Если подходящих событий несколько — спроси, какое именно. " +
+                "Не удаляй и не меняй события, о которых пользователь не просил. " +
                 "После вызова сообщи пользователю результат так, как его описывает ответ инструмента."
 
         private const val VOICE_HINT = "Это голосовое сообщение от пользователя. Ответь на него."
