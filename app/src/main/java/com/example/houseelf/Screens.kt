@@ -908,11 +908,21 @@ private fun MessageItem(message: ChatMessage, eventActions: EventActions, typing
                 }
                 audios.forEach { AudioChip(it, onDark = fromUser) }
                 if (message.text.isNotEmpty()) {
-                    Text(
-                        text = message.text,
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = if (fromUser) Color.White else Duo.Ink,
-                    )
+                    if (fromUser) {
+                        // Свои сообщения показываем как набрано: звёздочки и подчёркивания остаются как есть
+                        Text(
+                            text = message.text,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = Color.White,
+                        )
+                    } else {
+                        // Ответы модели — markdown; пока ответ пишется (typing), незакрытая разметка не мигает
+                        MarkdownText(
+                            text = message.text,
+                            color = Duo.Ink,
+                            streaming = typing,
+                        )
+                    }
                 } else if (!fromUser) {
                     if (typing) TypingDots() else Text("…", style = MaterialTheme.typography.bodyLarge, color = Duo.Muted)
                 }
