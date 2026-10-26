@@ -2,19 +2,19 @@
     <!-- Название под иконкой и в списке приложений. Houseelf — только технический идентификатор проекта. -->
     <string name="app_name">Карманный домовой</string>
 
-    <!-- Захват текста из других приложений -->
-    <!-- Подпись пункта в меню выделения текста и в списке «Поделиться» -->
-    <string name="capture_label">Домовой</string>
-    <string name="share_target_label">Домовой</string>
-    <!-- Плитка в шторке -->
-    <string name="tile_label">Домовой</string>
-    <string name="tile_subtitle">Из буфера</string>
-    <!-- Ярлык на иконке приложения -->
-    <string name="shortcut_clipboard_short">Из буфера</string>
-    <string name="shortcut_clipboard_long">Домовой: взять текст из буфера</string>
-    <!-- Виджет -->
-    <string name="widget_label">Домовой: из буфера</string>
-    <string name="widget_text">Взять текст из буфера</string>
-    <string name="widget_description">Скопировал текст — нажми, и домовой возьмёт его в мини-чат</string>
-</resources>
+    <!-- Домовой.Чат: мини-чат поверх любого приложения с текстом из буфера, выделения или «Поделиться» -->
+    <string name="chat_label">Домовой.Чат</string>
+    <string name="chat_tile_subtitle">Из буфера</string>
+    <string name="chat_shortcut_long">Домовой.Чат: открыть чат с текстом из буфера</string>
+    <string name="chat_widget_label">Домовой.Чат</string>
+    <string name="chat_widget_text">Чат с текстом из буфера</string>
+    <string name="chat_widget_description">Скопировал текст — нажми, и откроется мини-чат домового с этим текстом</string>
 
+    <!-- Домовой.Событие: вносит, меняет и удаляет события в календаре по тексту -->
+    <string name="event_label">Домовой.Событие</string>
+    <string name="event_tile_subtitle">Из буфера</string>
+    <string name="event_shortcut_long">Домовой.Событие: внести события из буфера в календарь</string>
+    <string name="event_widget_label">Домовой.Событие</string>
+    <string name="event_widget_text">События из буфера в календарь</string>
+    <string name="event_widget_description">Скопировал текст — нажми, и домовой сам внесёт события из него в календарь</string>
+</resources>

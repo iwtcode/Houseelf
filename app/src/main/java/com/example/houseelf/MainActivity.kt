@@ -19,9 +19,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import com.example.houseelf.capture.CaptureActivity
-import com.example.houseelf.capture.CaptureSetup
 import com.example.houseelf.chat.ChatViewModel
+import com.example.houseelf.quick.QuickTiles
 import com.example.houseelf.ui.HouseelfApp
 import com.example.houseelf.ui.theme.Duo
 import com.example.houseelf.ui.theme.HouseelfTheme
@@ -38,7 +37,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         if (savedInstanceState == null) {
             if (intent?.getBooleanExtra(EXTRA_OPEN_CHAT, false) == true) openChatTick++
-            CaptureSetup.offerQuickTile(this) // один раз: плитка «Домовой» в шторке
+            QuickTiles.offerAll(this) // по разу: плитки «Домовой.Чат» и «Домовой.Событие» в шторке
         }
         // Тема приложения всегда светлая, поэтому и значки в системных панелях всегда тёмные
         enableEdgeToEdge(

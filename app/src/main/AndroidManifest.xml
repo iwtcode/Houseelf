@@ -9,6 +9,8 @@
     <!-- Скачивание модели идёт в foreground-сервисе, чтобы работать в фоне -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Домовой.Событие разбирает текст моделью в фоне, пока пользователь занят своим делом -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Голосовой ввод: запись голоса, который модель слушает напрямую -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
@@ -54,7 +56,7 @@
         </activity>
 
         <!--
-            Мини-чат поверх любого приложения. Три входа:
+            Домовой.Чат: мини-чат поверх любого приложения. Три входа:
             1) меню выделения текста (PROCESS_TEXT), 2) «Поделиться» (SEND) и ярлык прямой отправки,
             3) буфер обмена: плитка в шторке, ярлык и виджет запускают активити с действием CAPTURE_CLIPBOARD.
             Своя задача без истории в «недавних»: после закрытия пользователь остаётся в исходном приложении.
@@ -63,19 +65,19 @@
             android:name=".capture.CaptureActivity"
             android:exported="true"
             android:excludeFromRecents="true"
-            android:label="@string/capture_label"
+            android:label="@string/chat_label"
             android:launchMode="singleTask"
             android:taskAffinity=""
             android:theme="@style/Theme.Houseelf.Overlay"
             android:windowSoftInputMode="adjustResize">
-            <intent-filter android:label="@string/capture_label">
+            <intent-filter android:label="@string/chat_label">
                 <action android:name="android.intent.action.PROCESS_TEXT" />
 
                 <category android:name="android.intent.category.DEFAULT" />
 
                 <data android:mimeType="text/plain" />
             </intent-filter>
-            <intent-filter>
+            <intent-filter android:label="@string/chat_label">
                 <action android:name="android.intent.action.SEND" />
 
                 <category android:name="android.intent.category.DEFAULT" />
@@ -83,37 +85,98 @@
                 <data android:mimeType="text/plain" />
             </intent-filter>
 
-            <!-- Цель прямой отправки: домовой в верхнем ряду «Поделиться» -->
+            <!-- Цель прямой отправки: «Домовой.Чат» в верхнем ряду «Поделиться» -->
             <meta-data
                 android:name="android.app.shortcuts"
                 android:resource="@xml/share_targets" />
         </activity>
 
-        <!-- Плитка «Домовой» в шторке быстрых настроек -->
+        <!--
+            Домовой.Событие: окна нет. Активити лишь берёт текст (буфер, выделение, «Поделиться»),
+            при необходимости просит доступ к календарю и передаёт текст сервису EventService.
+            Те же три входа, что и у чата, — но пользователь не уходит из своего приложения.
+        -->
+        <activity
+            android:name=".event.EventCaptureActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:label="@string/event_label"
+            android:launchMode="singleTask"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Houseelf.Invisible">
+            <intent-filter android:label="@string/event_label">
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter android:label="@string/event_label">
+                <action android:name="android.intent.action.SEND" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
+        <!-- Плитки в шторке быстрых настроек: по одной на каждую функцию -->
         <service
-            android:name=".capture.ClipboardTileService"
+            android:name=".capture.ChatTileService"
             android:exported="true"
             android:icon="@drawable/ic_clipboard"
-            android:label="@string/tile_label"
+            android:label="@string/chat_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+        <service
+            android:name=".event.EventTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_event"
+            android:label="@string/event_label"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
         </service>
 
-        <!-- Виджет на рабочий стол -->
+        <!-- Виджеты на рабочий стол: по одному на каждую функцию -->
         <receiver
-            android:name=".capture.ClipboardWidgetProvider"
+            android:name=".capture.ChatWidgetProvider"
             android:exported="true"
-            android:label="@string/widget_label">
+            android:label="@string/chat_widget_label">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
 
             <meta-data
                 android:name="android.appwidget.provider"
-                android:resource="@xml/widget_capture_info" />
+                android:resource="@xml/widget_chat_info" />
         </receiver>
+        <receiver
+            android:name=".event.EventWidgetProvider"
+            android:exported="true"
+            android:label="@string/event_widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_event_info" />
+        </receiver>
+
+        <!-- Домовой.Событие: модель разбирает текст и пишет в календарь, пока сервис на переднем плане -->
+        <service
+            android:name=".event.EventService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="On-device model reads the text the user sent and writes the events it finds to the calendar" />
+        </service>
 
         <service
             android:name=".model.ModelDownloadService"

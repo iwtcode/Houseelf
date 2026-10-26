@@ -219,7 +219,7 @@ private fun androidx.compose.foundation.layout.ColumnScope.SheetContent(
         when (state.phase) {
             Phase.Chat -> {
                 if (shownMessages.isEmpty() && quote == null) {
-                    Hint("Выдели текст в любом приложении и выбери «Домовой» в меню или в «Поделиться». " +
+                    Hint("Выдели текст в любом приложении и выбери «Домовой.Чат» в меню или в «Поделиться». " +
                         "Или скопируй текст и вставь его из буфера.")
                 }
                 val lastId = state.messages.lastOrNull()?.id

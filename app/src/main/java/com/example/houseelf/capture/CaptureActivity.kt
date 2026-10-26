@@ -28,15 +28,18 @@ import com.example.houseelf.chat.ui.EventActions
 import com.example.houseelf.media.TextOrigin
 import com.example.houseelf.sharedChatViewModel
 import com.example.houseelf.ui.theme.HouseelfTheme
+import com.example.houseelf.util.readClipboardText
 
 /**
- * Мини-чат поверх любого приложения. Прозрачная активити: под ней остаётся то приложение,
+ * Домовой.Чат — мини-чат поверх любого приложения. Прозрачная активити: под ней остаётся то приложение,
  * из которого пришёл текст, а пользователь не уходит из него.
  *
  * Сюда ведут три пути, текст везде прикрепляется к сообщению как вложение:
  *  1. пункт «Домовой» в меню выделения текста — ACTION_PROCESS_TEXT;
  *  2. «Поделиться» и ярлык прямой отправки — ACTION_SEND;
  *  3. буфер обмена — плитка в шторке, ярлык на иконке и виджет — [ACTION_CAPTURE_CLIPBOARD].
+ *
+ * Вносить события в календарь без чата умеет вторая функция — Домовой.Событие (пакет event).
  */
 class CaptureActivity : ComponentActivity() {
 
@@ -166,7 +169,7 @@ class CaptureActivity : ComponentActivity() {
     }
 
     private fun readClipboard() {
-        val text = CaptureSetup.readClipboardText(this)
+        val text = readClipboardText()
         if (text == null) {
             clipboardMissing = true
         } else {

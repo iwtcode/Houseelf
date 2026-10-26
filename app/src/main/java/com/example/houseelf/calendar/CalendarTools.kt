@@ -24,12 +24,16 @@ import java.util.concurrent.ConcurrentHashMap
  * [handler] делает всю работу (запись или показ карточки) и возвращает ответ для модели:
  * успех или нет + текст, по которому она сообщит пользователю результат.
  * [ensurePermission] при необходимости просит у пользователя доступ к календарю и ждёт ответа.
+ *
+ * [defaults] — что делать, если у нового события нет названия или даты. null (чат): вернуть модели ошибку,
+ * и она переспросит пользователя. Не null (Домовой.Событие, спросить некого): подставить значения по умолчанию.
  */
 class CalendarTools(
     private val context: Context,
     private val nextId: () -> Long,
     private val ensurePermission: () -> Boolean,
     private val handler: (EventProposal) -> Pair<Boolean, String>,
+    private val defaults: EventDefaults? = null,
 ) : ToolSet {
 
     /**
@@ -44,19 +48,18 @@ class CalendarTools(
             "Report the outcome to the user exactly as the tool result says."
     )
     fun addCalendarEvent(
-        @ToolParam(description = "Short event title, in the user's language") title: String,
-        @ToolParam(description = "Start date and time in ISO 8601 local time without time zone, e.g. 2026-10-25T15:00. For an all-day event use only the date, e.g. 2026-10-25") start: String,
+        @ToolParam(description = "Short event title, in the user's language. Omit if the text gives no title") title: String? = null,
+        @ToolParam(description = "Start date and time in ISO 8601 local time without time zone, e.g. 2026-10-25T15:00. For an all-day event use only the date, e.g. 2026-10-25. Omit if the text gives no date") start: String? = null,
         @ToolParam(description = "End date and time in the same format. Omit if the user did not say when it ends") end: String? = null,
         @ToolParam(description = "Place of the event, if mentioned") location: String? = null,
         @ToolParam(description = "Extra notes or description, if mentioned") description: String? = null,
         @ToolParam(description = "true if the event lasts all day or the user gave no time, otherwise false") allDay: Boolean = false,
     ): Map<String, Any> {
         return try {
-            val name = title.trim()
-            if (name.isEmpty()) return fail("The title is empty. Ask the user what the event is called.")
-
-            val (startValue, startHasTime) = parseDateTime(start)
-                ?: return fail("Could not read the start '$start'. Use the format 2026-10-25T15:00 or 2026-10-25.")
+            val name = resolveTitle(title)
+                ?: return fail("The title is empty. Ask the user what the event is called.")
+            val (startValue, startHasTime) = resolveStart(start)
+                ?: return fail(startProblem(start))
             val isAllDay = allDay || !startHasTime
 
             val endValue = end?.takeIf { it.isNotBlank() }?.let { parseDateTime(it)?.first }
@@ -287,6 +290,19 @@ class CalendarTools(
     }
 
     private fun ok(message: String): Map<String, Any> = mapOf("status" to "ok", "message" to message)
+
+    /** Название из запроса модели, а если его нет — название по умолчанию (только когда оно разрешено). */
+    private fun resolveTitle(raw: String?): String? =
+        raw?.trim()?.takeIf { it.isNotEmpty() } ?: defaults?.nextTitle()
+
+    /** Начало из запроса модели, а если его нет или оно не читается — начало по умолчанию (только когда оно разрешено). */
+    private fun resolveStart(raw: String?): Pair<LocalDateTime, Boolean>? =
+        raw?.takeIf { it.isNotBlank() }?.let { parseDateTime(it) } ?: defaults?.let { it.start() to false }
+
+    /** Почему начало не удалось определить: модель либо не передала его, либо передала нечитаемое. */
+    private fun startProblem(raw: String?): String =
+        if (raw.isNullOrBlank()) "The start is missing. Ask the user when the event takes place."
+        else "Could not read the start '$raw'. Use the format 2026-10-25T15:00 or 2026-10-25."
 
     private fun readDay(raw: String): LocalDate? = parseDateTime(raw)?.first?.toLocalDate()
 

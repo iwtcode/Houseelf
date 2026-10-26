@@ -23,6 +23,7 @@ import com.example.houseelf.model.DownloadPhase
 import com.example.houseelf.model.DownloadStatus
 import com.example.houseelf.model.DownloadTracker
 import com.example.houseelf.model.ModelStorage
+import com.example.houseelf.util.normalizeCapturedText
 import com.google.ai.edge.litertlm.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -30,11 +31,15 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
@@ -60,6 +65,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile private var currentBotId = -1L // ответ, в который попадут карточки событий
     @Volatile private var permissionInFlight = false // системное окно запроса разрешения уже на экране
     @Volatile private var permissionWaiter: CompletableFuture<Boolean>? = null // инструмент ждёт ответа на запрос
+    private val isolatedRunLock = Mutex() // идёт фоновая задача в отдельном разговоре (Домовой.Событие)
 
     // Инструменты, доступные модели. Вызываются из потока генерации.
     private val calendarTools = CalendarTools(
@@ -112,7 +118,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * Текущий диалог закрывается — вместе с моделью пропадает и его контекст.
      */
     fun unloadModel() {
-        if (_state.value.generating || loadJob?.isActive == true) return
+        if (isBusy() || loadJob?.isActive == true) return
         if (engine == null && _state.value.activeModel == null) return
         stopRecording(discard = true)
         viewModelScope.launch {
@@ -135,7 +141,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Открыть список моделей. Загруженная модель и чат остаются в памяти. */
     fun openLibrary() {
-        if (_state.value.generating) return
+        if (isBusy()) return
         stopRecording(discard = true)
         showLibrary()
     }
@@ -149,7 +155,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Выбрать модель из уже загруженных. */
     fun selectModel(fileName: String) {
-        if (_state.value.generating) return
+        if (isBusy()) return
         if (fileName == _state.value.activeModel && engine != null) {
             backToChat() // эта модель уже открыта — просто возвращаемся к чату
         } else {
@@ -159,7 +165,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Удалить одну модель с телефона (только по явной просьбе пользователя). */
     fun deleteModel(fileName: String) {
-        if (_state.value.generating) return
+        if (isBusy()) return
         val wasActive = fileName == _state.value.activeModel
         if (wasActive) stopRecording(discard = true)
         viewModelScope.launch {
@@ -413,17 +419,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * Вложение одно: новый текст заменяет прежний. Вернёт false, если текст пустой.
      */
     fun attachText(raw: CharSequence, source: String?, origin: TextOrigin): Boolean {
-        val clean = raw.toString().replace("\r\n", "\n").trim()
-        if (clean.isEmpty()) return false
-        val truncated = clean.length > MAX_CAPTURE_CHARS
-        var text = if (truncated) clean.take(MAX_CAPTURE_CHARS) else clean
-        if (truncated && text.last().isHighSurrogate()) text = text.dropLast(1) // не режем эмодзи пополам
+        val captured = normalizeCapturedText(raw, MAX_CAPTURE_CHARS) ?: return false
         val att = TextAttachment(
             id = nextAttachmentId++,
-            text = text.trimEnd(),
+            text = captured.text,
             source = source?.takeIf { it.isNotBlank() },
             origin = origin,
-            truncated = truncated,
+            truncated = captured.truncated,
         )
         _state.update { s -> s.copy(draft = s.draft.filter { it !is TextAttachment } + att, notice = null) }
         return true
@@ -489,6 +491,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val prompt = text.trim()
         val attachments = s.draft
         if (prompt.isEmpty() && attachments.isEmpty()) return
+        if (isolatedRunLock.isLocked) {
+            showNotice("Домовой сейчас вносит события в календарь — подожди секунду")
+            return
+        }
         if (s.generating || s.recording || s.attaching) return
 
         val botId = nextId + 1
@@ -667,9 +673,54 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ───────── Фоновые задачи без чата (Домовой.Событие) ─────────
+
+    /** Чат отвечает или модель занята фоновой задачей: пока так, менять модель и переписку нельзя. */
+    private fun isBusy(): Boolean = _state.value.generating || isolatedRunLock.isLocked
+
+    /**
+     * Выполняет разовую задачу модели в отдельном разговоре: переписка в чате не меняется и не видит задачу.
+     * Модель, если она ещё не загружена, загружается сама. Задачи идут строго по одной.
+     * Бросает [IllegalStateException] с понятным пользователю текстом, если модель недоступна.
+     * Вызывать из главного потока: загрузка модели управляется оттуда.
+     */
+    suspend fun runIsolated(config: ConversationConfig, task: suspend (Conversation) -> Unit) {
+        isolatedRunLock.withLock {
+            val loaded = awaitLoadedEngine()
+            awaitChatIdle()
+            withContext(Dispatchers.Default) {
+                val isolated = loaded.createConversation(config)
+                try {
+                    task(isolated)
+                } finally {
+                    runCatching { isolated.close() }
+                }
+            }
+        }
+    }
+
+    /** Движок с загруженной моделью. Если её нет в памяти — загружает ту, которой пользовались в прошлый раз. */
+    private suspend fun awaitLoadedEngine(): Engine {
+        engine?.let { return it }
+        if (_state.value.phase == Phase.Library) {
+            if (storage.listModels().isEmpty()) throw IllegalStateException("На телефоне нет модели. Скачай её в приложении.")
+            loadPreferredModel()
+        }
+        val settled = withTimeoutOrNull(MODEL_WAIT_MS) { _state.first { it.phase == Phase.Chat || it.phase == Phase.Error } }
+            ?: throw IllegalStateException("Модель не успела загрузиться")
+        if (settled.phase == Phase.Error) throw IllegalStateException(settled.error ?: "Не удалось загрузить модель")
+        return engine ?: throw IllegalStateException("Модель не загружена")
+    }
+
+    /** Ждёт, пока чат допишет ответ: два разговора с одной моделью одновременно не ведём. */
+    private suspend fun awaitChatIdle() {
+        withTimeoutOrNull(MODEL_WAIT_MS) { _state.first { !it.generating } }
+            ?: throw IllegalStateException("Чат ещё отвечает, попробуй позже")
+    }
+
     fun newChat() {
         val e = engine ?: return
-        if (_state.value.generating) return
+        if (isBusy()) return
         stopRecording(discard = true)
         viewModelScope.launch {
             withContext(Dispatchers.Default) {
@@ -710,5 +761,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         const val MAX_CAPTURE_CHARS = 5_000
 
         private const val PERMISSION_WAIT_SECONDS = 120L
+
+        /** Сколько фоновая задача ждёт загрузку модели или конец ответа в чате. */
+        private const val MODEL_WAIT_MS = 120_000L
     }
 }

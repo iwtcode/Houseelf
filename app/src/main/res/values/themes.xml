@@ -14,5 +14,10 @@
         <item name="android:windowContentOverlay">@null</item>
         <item name="android:backgroundDimEnabled">false</item>
     </style>
+
+    <!-- Домовой.Событие: окна не видно — активити лишь читает текст и сразу закрывается -->
+    <style name="Theme.Houseelf.Invisible" parent="Theme.Houseelf.Overlay">
+        <item name="android:windowAnimationStyle">@null</item>
+    </style>
 </resources>
 
