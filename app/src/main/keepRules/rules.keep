@@ -16,4 +16,5 @@
 
 # Инструменты модели ищутся через рефлексию по аннотациям @Tool / @ToolParam
 -keepattributes *Annotation*
--keep class com.example.houseelf.CalendarTools { *; }
+-keep class com.example.houseelf.calendar.CalendarTools { *; }
+

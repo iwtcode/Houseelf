@@ -9,7 +9,8 @@
         android:shortcutLongLabel="@string/shortcut_clipboard_long">
         <intent
             android:action="com.example.houseelf.action.CAPTURE_CLIPBOARD"
-            android:targetClass="com.example.houseelf.CaptureActivity"
+            android:targetClass="com.example.houseelf.capture.CaptureActivity"
             android:targetPackage="com.example.houseelf" />
     </shortcut>
 </shortcuts>
+

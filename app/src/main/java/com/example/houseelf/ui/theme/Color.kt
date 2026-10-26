@@ -27,3 +27,4 @@ object Duo {
     val SwitchOff = Color(0xFFC5D0CF)
     val Dashed = Color(0xFFB8C6C5)
 }
+

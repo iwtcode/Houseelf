@@ -60,7 +60,7 @@
             Своя задача без истории в «недавних»: после закрытия пользователь остаётся в исходном приложении.
         -->
         <activity
-            android:name=".CaptureActivity"
+            android:name=".capture.CaptureActivity"
             android:exported="true"
             android:excludeFromRecents="true"
             android:label="@string/capture_label"
@@ -91,7 +91,7 @@
 
         <!-- Плитка «Домовой» в шторке быстрых настроек -->
         <service
-            android:name=".ClipboardTileService"
+            android:name=".capture.ClipboardTileService"
             android:exported="true"
             android:icon="@drawable/ic_clipboard"
             android:label="@string/tile_label"
@@ -103,7 +103,7 @@
 
         <!-- Виджет на рабочий стол -->
         <receiver
-            android:name=".ClipboardWidgetProvider"
+            android:name=".capture.ClipboardWidgetProvider"
             android:exported="true"
             android:label="@string/widget_label">
             <intent-filter>
@@ -116,9 +116,10 @@
         </receiver>
 
         <service
-            android:name=".ModelDownloadService"
+            android:name=".model.ModelDownloadService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
     </application>
 
-</manifest>
+</manifest>
+

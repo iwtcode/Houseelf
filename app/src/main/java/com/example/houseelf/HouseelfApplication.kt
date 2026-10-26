@@ -5,6 +5,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
+import com.example.houseelf.capture.CaptureActivity
+import com.example.houseelf.capture.CaptureSetup
+import com.example.houseelf.chat.ChatViewModel
 
 /**
  * Приложение хранит [ChatViewModel] само, а не отдаёт его одной активити.

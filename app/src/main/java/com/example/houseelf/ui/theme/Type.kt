@@ -25,3 +25,4 @@ val Typography = Typography(
     labelMedium = TextStyle(fontFamily = DuoFont, fontWeight = FontWeight.ExtraBold, fontSize = 12.sp, lineHeight = 16.sp),
     labelSmall = TextStyle(fontFamily = DuoFont, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp, lineHeight = 14.sp),
 )
+
