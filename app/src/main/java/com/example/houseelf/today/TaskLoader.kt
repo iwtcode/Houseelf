@@ -21,6 +21,7 @@ fun loadTasks(context: Context, today: LocalDate): List<DayTask> {
     ContentUris.appendId(uri, from)
     ContentUris.appendId(uri, to)
 
+    val subtasks = SubtaskStore(context)
     val result = mutableListOf<DayTask>()
     try {
         context.contentResolver.query(
@@ -32,6 +33,7 @@ fun loadTasks(context: Context, today: LocalDate): List<DayTask> {
                 CalendarContract.Instances.END,
                 CalendarContract.Instances.ALL_DAY,
                 CalendarContract.Instances.EVENT_LOCATION,
+                CalendarContract.Instances.DESCRIPTION,
             ),
             null, null,
             "${CalendarContract.Instances.BEGIN} ASC",
@@ -43,6 +45,7 @@ fun loadTasks(context: Context, today: LocalDate): List<DayTask> {
                 val finish = c.getLong(3)
                 val allDay = c.getInt(4) == 1
                 val location = c.getString(5)?.takeIf { it.isNotBlank() }
+                val description = c.getString(6)?.takeIf { it.isNotBlank() }
 
                 val start: LocalDateTime
                 val end: LocalDateTime
@@ -68,6 +71,8 @@ fun loadTasks(context: Context, today: LocalDate): List<DayTask> {
                     end = end,
                     allDay = allDay,
                     location = location,
+                    description = description,
+                    steps = subtasks.steps(eventId),
                 )
             }
         }

@@ -34,7 +34,7 @@ import java.net.URL
 private class FatalDownloadException(message: String) : IOException(message)
 
 /**
- * Скачивает модель с Hugging Face в фоне.
+ * Скачивает выбранную из каталога модель ([ModelCatalog]) с Hugging Face в фоне.
  *
  * Почему не DownloadManager: большие файлы он сам ставит на паузу «до Wi-Fi», когда
  * телефон в мобильной сети, и приложение не может это отменить. Здесь решение принимает
@@ -50,6 +50,7 @@ class ModelDownloadService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var job: Job? = null
     private var total = -1L
+    private var model: CatalogModel? = null // что скачиваем: берётся из настроек при каждом запуске
 
     private lateinit var storage: ModelStorage
     private lateinit var notifications: NotificationManager
@@ -77,11 +78,14 @@ class ModelDownloadService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        if (!storage.hasPendingDownload()) {
+        val wanted = storage.pendingDownloadModel()
+        if (!storage.hasPendingDownload() || wanted == null) {
+            storage.clearDownloadState()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
         }
+        model = wanted
         // Повторный запуск (например, смена Wi-Fi → мобильная сеть) перезапускает загрузку с того же места
         val previous = job
         job = scope.launch {
@@ -95,9 +99,11 @@ class ModelDownloadService : Service() {
     override fun onTimeout(startId: Int, fgsType: Int) {
         job?.cancel()
         storage.clearDownloadState() // недокачанный файл остаётся — следующая загрузка продолжит с него
+        val current = model
         DownloadTracker.status.value = DownloadStatus(
-            DownloadPhase.Failed, storage.partFile().length(), total,
+            DownloadPhase.Failed, current?.let { storage.partFile(it.fileName).length() } ?: 0L, total,
             "Система остановила скачивание из-за ограничения по времени. Нажмите «Скачать», чтобы продолжить.",
+            fileName = current?.fileName,
         )
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -111,8 +117,9 @@ class ModelDownloadService : Service() {
     // ───────── Скачивание ─────────
 
     private suspend fun runDownload() {
-        val part = storage.partFile()
-        val target = storage.modelFile(ModelStorage.MODEL_FILE_NAME)
+        val m = model ?: return
+        val part = storage.partFile(m.fileName)
+        val target = storage.modelFile(m.fileName)
         val cm = getSystemService(ConnectivityManager::class.java)
         var failures = 0
         var lastError = ""
@@ -128,12 +135,12 @@ class ModelDownloadService : Service() {
             if (failures > 0) publish(DownloadPhase.Retrying, part.length())
             val sizeBefore = part.length()
             try {
-                downloadOnce(cm, wifiOnly, part)
+                downloadOnce(cm, wifiOnly, part, m.url)
                 target.delete()
                 if (!part.renameTo(target)) throw FatalDownloadException("Не удалось сохранить файл модели")
                 finish(
-                    DownloadStatus(DownloadPhase.Done, target.length(), target.length()),
-                    "Модель загружена", "Gemma 4 E2B готова к работе", ok = true,
+                    DownloadStatus(DownloadPhase.Done, target.length(), target.length(), fileName = m.fileName),
+                    "Модель загружена", "${m.title} готова к работе", ok = true,
                 )
                 return
             } catch (e: CancellationException) {
@@ -141,7 +148,7 @@ class ModelDownloadService : Service() {
             } catch (e: FatalDownloadException) {
                 part.delete()
                 finish(
-                    DownloadStatus(DownloadPhase.Failed, 0L, -1L, e.message),
+                    DownloadStatus(DownloadPhase.Failed, 0L, -1L, e.message, m.fileName),
                     "Не удалось скачать модель", e.message.orEmpty(), ok = false,
                 )
                 return
@@ -152,7 +159,10 @@ class ModelDownloadService : Service() {
                 if (failures > MAX_FAILURES) {
                     val msg = "Не удалось скачать модель: $lastError. Проверьте интернет или VPN и повторите — " +
                         "загрузка продолжится с того же места."
-                    finish(DownloadStatus(DownloadPhase.Failed, part.length(), total, msg), "Не удалось скачать модель", msg, ok = false)
+                    finish(
+                        DownloadStatus(DownloadPhase.Failed, part.length(), total, msg, m.fileName),
+                        "Не удалось скачать модель", msg, ok = false,
+                    )
                     return
                 }
                 publish(DownloadPhase.Retrying, part.length())
@@ -162,11 +172,11 @@ class ModelDownloadService : Service() {
     }
 
     /** Одна попытка: докачивает файл до конца. Бросает IOException при обрыве. */
-    private suspend fun downloadOnce(cm: ConnectivityManager, wifiOnly: Boolean, part: File) {
+    private suspend fun downloadOnce(cm: ConnectivityManager, wifiOnly: Boolean, part: File, url: String) {
         var offset = if (part.exists()) part.length() else 0L
         // Обычное соединение через сеть по умолчанию — именно по ней идёт и трафик VPN.
         // Раньше соединение привязывалось к конкретной сети (Network.openConnection) и в обход VPN.
-        val conn = URL(ModelStorage.MODEL_URL).openConnection() as HttpURLConnection
+        val conn = URL(url).openConnection() as HttpURLConnection
         try {
             conn.connectTimeout = 30_000 // через VPN и в эмуляторе соединение устанавливается дольше
             conn.readTimeout = 30_000
@@ -269,7 +279,7 @@ class ModelDownloadService : Service() {
 
     private fun publish(phase: DownloadPhase, done: Long) {
         if (!storage.hasPendingDownload()) return // скачивание уже отменили
-        DownloadTracker.status.value = DownloadStatus(phase, done, total)
+        DownloadTracker.status.value = DownloadStatus(phase, done, total, fileName = model?.fileName)
         val text = when (phase) {
             DownloadPhase.WaitingWifi -> "Жду Wi-Fi…"
             DownloadPhase.WaitingNetwork -> "Жду сеть…"
@@ -298,7 +308,7 @@ class ModelDownloadService : Service() {
     private fun progressNotification(text: String, done: Long, total: Long): Notification {
         val builder = Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setContentTitle("Gemma 4 E2B")
+            .setContentTitle(model?.title ?: "Модель")
             .setContentText(text)
             .setContentIntent(openAppIntent())
             .setOngoing(true)

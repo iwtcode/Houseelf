@@ -50,6 +50,7 @@ import com.example.houseelf.chat.ui.ChatScreen
 import com.example.houseelf.chat.ui.EventActions
 import com.example.houseelf.library.LibraryScreen
 import com.example.houseelf.library.NetworkChoiceDialog
+import com.example.houseelf.model.CatalogModel
 import com.example.houseelf.library.ProgressScreen
 import com.example.houseelf.model.modelDisplayName
 import com.example.houseelf.today.TodayScreen
@@ -146,16 +147,19 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel(), 
     // Разрешение на уведомления (Android 13+): без него не будет уведомления о ходе скачивания.
     // Отказ не мешает скачиванию, поэтому в любом случае продолжаем.
     val context = LocalContext.current
+    var pendingDownload by remember { mutableStateOf<CatalogModel?>(null) } // какую модель ждёт ответ на запрос разрешения
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
-        vm.requestDownload()
+        pendingDownload?.let(vm::requestDownload)
+        pendingDownload = null
     }
-    val onDownload = {
+    val onDownload = { model: CatalogModel ->
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
+            pendingDownload = model
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         } else {
-            vm.requestDownload()
+            vm.requestDownload(model)
         }
     }
 
@@ -330,6 +334,7 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel(), 
 
     if (state.askNetworkChoice) {
         NetworkChoiceDialog(
+            sizeLabel = state.networkChoiceSize,
             onWaitWifi = { vm.startDownload(wifiOnly = true) },
             onContinue = { vm.startDownload(wifiOnly = false) },
             onDismiss = vm::dismissNetworkChoice,

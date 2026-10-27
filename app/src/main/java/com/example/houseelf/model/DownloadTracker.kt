@@ -17,6 +17,8 @@ data class DownloadStatus(
     val downloadedBytes: Long,
     val totalBytes: Long, // -1, пока размер неизвестен
     val error: String? = null,
+    /** Файл модели, который скачивается (по нему интерфейс знает, что открывать после загрузки). */
+    val fileName: String? = null,
 )
 
 /** Связь между сервисом скачивания и интерфейсом. null — скачивание не идёт. */

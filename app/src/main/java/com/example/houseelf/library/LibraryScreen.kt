@@ -27,6 +27,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.houseelf.model.CatalogModel
+import com.example.houseelf.model.ModelCatalog
 import com.example.houseelf.model.ModelInfo
 import com.example.houseelf.model.ModelStorage
 import com.example.houseelf.model.formatSize
@@ -58,7 +60,7 @@ fun LibraryScreen(
     onAutoLoadChange: (Boolean) -> Unit,
     onConfirmActionsChange: (Boolean) -> Unit,
     onDelete: (String) -> Unit,
-    onDownload: () -> Unit,
+    onDownload: (CatalogModel) -> Unit,
     onPickFile: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
@@ -66,7 +68,8 @@ fun LibraryScreen(
     var pendingDelete by remember { mutableStateOf<ModelInfo?>(null) }
     var pendingUnload by remember { mutableStateOf(false) }
     val canGoBack = activeModel != null
-    val canDownload = models.none { it.fileName == ModelStorage.MODEL_FILE_NAME }
+    // Что ещё можно скачать: модели из каталога, которых на телефоне пока нет
+    val downloadable = ModelCatalog.models.filter { m -> models.none { it.fileName.equals(m.fileName, ignoreCase = true) } }
 
     Column(modifier.fillMaxSize().background(Duo.Bg)) {
         ScreenHeader(
@@ -110,7 +113,7 @@ fun LibraryScreen(
                             )
                             Text(
                                 if (models.isEmpty()) {
-                                    "Скачай Gemma 4 E2B (около 2,6 ГБ) или загрузи свою. Дальше чат работает без интернета."
+                                    "Выбери модель ниже и скачай её или загрузи свою. Дальше чат работает без интернета."
                                 } else {
                                     "Переписки остаются у вас. Интернет нужен только для скачивания модели."
                                 },
@@ -166,15 +169,12 @@ fun LibraryScreen(
                         style = MaterialTheme.typography.titleSmall,
                         color = Duo.Muted,
                     )
-                    if (canDownload) {
-                        DuoButton(
-                            "Скачать Gemma 4 E2B",
-                            onDownload,
-                            Modifier.fillMaxWidth(),
-                            icon = DuoIcons.Download,
-                        )
+                    downloadable.forEach { model ->
+                        CatalogCard(model, onDownload = { onDownload(model) })
+                    }
+                    if (downloadable.isNotEmpty()) {
                         Text(
-                            "Около 2,6 ГБ — лучше по Wi-Fi",
+                            "Модели большие — лучше качать по Wi-Fi",
                             style = MaterialTheme.typography.bodySmall,
                             color = Duo.Muted,
                         )
@@ -183,7 +183,7 @@ fun LibraryScreen(
                         "Из памяти телефона",
                         onPickFile,
                         Modifier.fillMaxWidth(),
-                        kind = if (canDownload) DuoKind.Outline else DuoKind.Primary,
+                        kind = if (downloadable.isNotEmpty()) DuoKind.Outline else DuoKind.Primary,
                         icon = DuoIcons.Folder,
                     )
                     Text(
@@ -226,6 +226,25 @@ fun LibraryScreen(
             },
             onDismiss = { pendingDelete = null },
         )
+    }
+}
+
+/** Модель из каталога, которую можно скачать: название, размер, что умеет и кнопка. */
+@Composable
+private fun CatalogCard(model: CatalogModel, onDownload: () -> Unit) {
+    DuoCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(model.title, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                Text(model.sizeLabel, style = MaterialTheme.typography.labelLarge, color = Duo.Muted)
+            }
+            Text(model.description, style = MaterialTheme.typography.bodySmall, color = Duo.Muted)
+            if (model.ramHint != null) {
+                Text(model.ramHint, style = MaterialTheme.typography.bodySmall, color = Duo.Muted)
+            }
+            Spacer(Modifier.height(4.dp))
+            DuoButton("Скачать", onDownload, Modifier.fillMaxWidth(), icon = DuoIcons.Download)
+        }
     }
 }
 

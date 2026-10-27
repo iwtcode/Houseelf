@@ -144,7 +144,11 @@ fun ChatScreen(
                     Hedgehog(96.dp)
                     Spacer(Modifier.height(16.dp))
                     Text(
-                        if (state.mediaSupported) "Напиши домовому, пришли фото\nили запиши голосовое" else "Напиши что-нибудь домовому",
+                        when {
+                            state.audioSupported -> "Напиши домовому, пришли фото\nили запиши голосовое"
+                            state.imagesSupported -> "Напиши домовому\nили пришли фото"
+                            else -> "Напиши что-нибудь домовому"
+                        },
                         style = MaterialTheme.typography.bodyLarge,
                         color = Duo.Muted,
                         textAlign = TextAlign.Center,
@@ -185,7 +189,7 @@ fun ChatScreen(
                         keyboard?.hide()
                     }
                     SuggestionChip("Что на сегодня?") { sendChip("Что на сегодня?") }
-                    SuggestionChip("Разбить дело на шаги") { sendChip("Разбей моё дело на шаги") }
+                    SuggestionChip("Разбить дело на шаги") { sendChip("Разбей моё ближайшее дело на шаги. Найди его в календаре на неделю.") }
                 }
             }
         }
@@ -252,16 +256,20 @@ fun ChatScreen(
                                 containerColor = Color.White,
                                 shape = RoundedCornerShape(16.dp),
                             ) {
-                                DropdownMenuItem(
-                                    text = { Text("Изображение", style = MaterialTheme.typography.labelLarge) },
-                                    leadingIcon = { Icon(DuoIcons.Image, null, tint = Duo.Teal) },
-                                    onClick = { menuOpen = false; onPickImages() },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Аудиофайл", style = MaterialTheme.typography.labelLarge) },
-                                    leadingIcon = { Icon(DuoIcons.Music, null, tint = Duo.Teal) },
-                                    onClick = { menuOpen = false; onPickAudio() },
-                                )
+                                if (state.imagesSupported) {
+                                    DropdownMenuItem(
+                                        text = { Text("Изображение", style = MaterialTheme.typography.labelLarge) },
+                                        leadingIcon = { Icon(DuoIcons.Image, null, tint = Duo.Teal) },
+                                        onClick = { menuOpen = false; onPickImages() },
+                                    )
+                                }
+                                if (state.audioSupported) {
+                                    DropdownMenuItem(
+                                        text = { Text("Аудиофайл", style = MaterialTheme.typography.labelLarge) },
+                                        leadingIcon = { Icon(DuoIcons.Music, null, tint = Duo.Teal) },
+                                        onClick = { menuOpen = false; onPickAudio() },
+                                    )
+                                }
                             }
                         }
                     }
@@ -289,7 +297,7 @@ fun ChatScreen(
                         )
                     }
                     // Микрофон и «Отправить» всегда рядом: ни одна кнопка не прячется и не подменяет другую
-                    if (state.mediaSupported) {
+                    if (state.audioSupported) {
                         DuoIconButton(DuoIcons.Mic, "Голосовое", onStartRecording, enabled = !state.attaching)
                     }
                     DuoIconButton(

@@ -1,6 +1,8 @@
 package com.example.houseelf.calendar
 
 import android.content.Context
+import com.example.houseelf.today.SubtaskStore
+import com.example.houseelf.today.parseSteps
 import com.google.ai.edge.litertlm.Tool
 import com.google.ai.edge.litertlm.ToolParam
 import com.google.ai.edge.litertlm.ToolSet
@@ -19,7 +21,8 @@ import java.util.concurrent.ConcurrentHashMap
  * Класс находится через рефлексию, поэтому он перечислен в keepRules/rules.keep.
  * Описания — на английском: так маленькие модели надёжнее выбирают функцию и заполняют аргументы.
  *
- * Модель умеет: посмотреть календарь ([listCalendarEvents]), добавить, изменить и удалить событие.
+ * Модель умеет: посмотреть календарь ([listCalendarEvents]), добавить, изменить и удалить событие,
+ * а также разбить дело на шаги ([setTaskSteps]).
  *
  * [handler] делает всю работу (запись или показ карточки) и возвращает ответ для модели:
  * успех или нет + текст, по которому она сообщит пользователю результат.
@@ -42,17 +45,19 @@ class CalendarTools(
      */
     private val knownIds: MutableSet<Long> = ConcurrentHashMap.newKeySet()
 
+    private val subtasks = SubtaskStore(context)
+
     @Tool(
         description = "Adds an event to the user's calendar. Call it whenever the user asks to add, " +
             "schedule, book or remind about a meeting, appointment, event, task or deadline. " +
             "Report the outcome to the user exactly as the tool result says."
     )
     fun addCalendarEvent(
-        @ToolParam(description = "Short event title, in the user's language. Omit if the text gives no title") title: String? = null,
+        @ToolParam(description = "Very short title, 1-3 words, in the user's language, without date, time or details, e.g. 'Поход в магазин'. Omit if the text gives no title") title: String? = null,
         @ToolParam(description = "Start date and time in ISO 8601 local time without time zone, e.g. 2026-10-25T15:00. For an all-day event use only the date, e.g. 2026-10-25. Omit if the text gives no date") start: String? = null,
         @ToolParam(description = "End date and time in the same format. Omit if the user did not say when it ends") end: String? = null,
         @ToolParam(description = "Place of the event, if mentioned") location: String? = null,
-        @ToolParam(description = "Extra notes or description, if mentioned") description: String? = null,
+        @ToolParam(description = "Details of the event: what to do, buy or take, e.g. 'купить молоко, хлеб, яйца и сыр'. Put here everything that is not the title, date, time or place") description: String? = null,
         @ToolParam(description = "true if the event lasts all day or the user gave no time, otherwise false") allDay: Boolean = false,
     ): Map<String, Any> {
         return try {
@@ -289,6 +294,32 @@ class CalendarTools(
         }
     }
 
+    @Tool(
+        description = "Splits a task into steps (subtasks) that the user sees in the Today tab. " +
+            "Call it when the user asks to break a task into steps or subtasks. " +
+            "You need the event id: get it from listCalendarEvents first. " +
+            "Base the steps on the task notes if it has them. Report the outcome to the user exactly as the tool result says."
+    )
+    fun setTaskSteps(
+        @ToolParam(description = "The event id from listCalendarEvents, digits only") eventId: String,
+        @ToolParam(description = "3 to 6 short steps, one per line, in the user's language. Each step is an action of 2-6 words. No numbering") steps: String,
+    ): Map<String, Any> {
+        return try {
+            val id = parseEventId(eventId)
+                ?: return fail("The event id must be the number from listCalendarEvents. Call listCalendarEvents first.")
+            if (!ensurePermission()) return fail(NO_ACCESS)
+            val task = loadCalendarEvent(context, id)
+                ?: return fail("There is no event with id $id any more. Call listCalendarEvents again.")
+            val parsed = parseSteps(steps)
+            if (parsed.size < MIN_STEPS) return fail("Give at least $MIN_STEPS short steps, one per line.")
+
+            subtasks.save(id, parsed)
+            ok("The task '${task.title}' now has ${parsed.size} steps. The user sees them in the Today tab. Tell the user briefly.")
+        } catch (t: Throwable) {
+            fail("Failed to save the steps: ${t.message ?: t.javaClass.simpleName}")
+        }
+    }
+
     private fun ok(message: String): Map<String, Any> = mapOf("status" to "ok", "message" to message)
 
     /** Название из запроса модели, а если его нет — название по умолчанию (только когда оно разрешено). */
@@ -323,12 +354,15 @@ class CalendarTools(
         return buildString {
             append("[id=").append(e.id).append("] ").append(whenText).append(" | ").append(e.title.take(80))
             e.location?.let { append(" | place: ").append(it.take(60)) }
+            e.description?.let { append(" | notes: ").append(it.take(MAX_NOTES_LENGTH)) }
             if (e.recurring) append(" | repeats")
         }
     }
 
     private companion object {
         const val MAX_LISTED = 40
+        const val MAX_NOTES_LENGTH = 120
+        const val MIN_STEPS = 2
         const val MAX_RANGE_DAYS = 92
         const val NO_ACCESS = "The user has not allowed access to the calendar, so it cannot be used. " +
             "Tell the user that calendar access is needed and they can allow it in the phone settings."

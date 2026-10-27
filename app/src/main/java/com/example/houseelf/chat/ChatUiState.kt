@@ -33,6 +33,8 @@ data class UiState(
     val loadingModel: String? = null,
     /** Показать окно «ждать Wi-Fi или продолжить по мобильной сети». */
     val askNetworkChoice: Boolean = false,
+    /** Размер скачиваемой модели для текста этого окна. */
+    val networkChoiceSize: String = "",
     /** Скачивание сейчас ждёт Wi-Fi. */
     val waitingWifi: Boolean = false,
     /** Оперативная память телефона: свободно / всего (обновляется при открытии списка моделей). */
@@ -44,8 +46,14 @@ data class UiState(
     val confirmActions: Boolean = false,
     /** Нужно показать системный запрос разрешения на календарь. */
     val needCalendarPermission: Boolean = false,
-    /** Движок загружен с поддержкой изображений и звука. */
-    val mediaSupported: Boolean = false,
+    /** Движок загружен с поддержкой изображений. */
+    val imagesSupported: Boolean = false,
+    /** Движок загружен с поддержкой звука (голосовые сообщения и аудиофайлы). */
+    val audioSupported: Boolean = false,
+    /** Сколько изображений модель принимает в одном сообщении. */
+    val maxImages: Int = 0,
+    /** Модель умеет вносить события в календарь. */
+    val toolsSupported: Boolean = false,
     /** Вложения, прикреплённые к ещё не отправленному сообщению. */
     val draft: List<Attachment> = emptyList(),
     /** Файлы из выбора сейчас обрабатываются. */
@@ -55,4 +63,7 @@ data class UiState(
     val recordingMs: Long = 0,
     /** Короткое сообщение пользователю над полем ввода (ошибка вложения и т. п.). */
     val notice: String? = null,
-)
+) {
+    /** Есть ли что прикреплять к сообщению. */
+    val mediaSupported: Boolean get() = imagesSupported || audioSupported
+}

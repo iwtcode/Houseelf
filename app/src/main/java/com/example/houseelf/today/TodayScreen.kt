@@ -53,6 +53,8 @@ fun TodayScreen(
 
     var tasks by remember { mutableStateOf<List<DayTask>?>(null) }
     var done by remember { mutableStateOf(store.doneKeys()) }
+    var started by remember { mutableStateOf(store.startedKeys()) }
+    var stepsDone by remember { mutableStateOf(store.stepsDone()) }
     var xp by remember { mutableIntStateOf(store.xp) }
     var streak by remember { mutableIntStateOf(store.streak(today)) }
 
@@ -142,13 +144,26 @@ fun TodayScreen(
                             state = state,
                             today = today,
                             offset = if (index % 2 == 1) 36.dp else 0.dp,
-                            onDone = {
-                                store.complete(task.key, today)
-                                done = store.doneKeys()
-                                xp = store.xp
-                                streak = store.streak(today)
-                            },
-                            onOpen = { onOpenEvent(task.eventId) },
+                            started = task.key in started,
+                            stepsDone = stepsDone[task.key] ?: 0,
+                            actions = TaskActions(
+                                onStart = {
+                                    store.start(task.key)
+                                    started = store.startedKeys()
+                                },
+                                onNextStep = {
+                                    store.nextStep(task.key)
+                                    stepsDone = store.stepsDone()
+                                },
+                                onDone = {
+                                    store.complete(task.key, today)
+                                    done = store.doneKeys()
+                                    stepsDone = store.stepsDone()
+                                    xp = store.xp
+                                    streak = store.streak(today)
+                                },
+                                onOpen = { onOpenEvent(task.eventId) },
+                            ),
                         )
                     }
                 }

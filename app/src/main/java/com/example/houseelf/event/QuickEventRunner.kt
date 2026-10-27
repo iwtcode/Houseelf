@@ -36,7 +36,7 @@ internal class QuickEventRunner(
             systemInstruction = Contents.of(EventPrompts.systemInstruction(currentTimeForPrompt())),
             tools = listOf(tool(tools)),
         )
-        chat.runIsolated(config) { conversation ->
+        chat.runIsolated(config, needsTools = true) { conversation ->
             // Ответ модели нам не нужен: итог собирает batch из реальных записей в календарь
             conversation.sendMessageAsync(EventPrompts.userMessage(text)).collect { }
         }

@@ -22,7 +22,10 @@ import com.example.houseelf.media.TextAttachment
 import com.example.houseelf.media.TextOrigin
 import com.example.houseelf.model.DownloadPhase
 import com.example.houseelf.model.DownloadStatus
+import com.example.houseelf.model.CatalogModel
 import com.example.houseelf.model.DownloadTracker
+import com.example.houseelf.model.ModelCatalog
+import com.example.houseelf.model.ModelProfile
 import com.example.houseelf.model.ModelStorage
 import com.example.houseelf.util.normalizeCapturedText
 import com.google.ai.edge.litertlm.*
@@ -48,7 +51,7 @@ import java.util.concurrent.atomic.AtomicLong
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private val storage = ModelStorage(app)
-    private val engineFactory = EngineFactory(storage, app.cacheDir.path)
+    private val engineFactory = EngineFactory(storage, app.cacheDir.path) { ramInfo().second }
     private val voiceRecorder = VoiceRecorder()
 
     private val _state = MutableStateFlow(UiState())
@@ -59,6 +62,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private var setupJob: Job? = null // скачивание или импорт
     private var loadJob: Job? = null // загрузка модели в движок
     private var targetModel: String? = null // модель, которую грузим (для «Повторить»)
+    private var activeProfile: ModelProfile = ModelCatalog.profileFor(null) // что умеет загруженная модель
+    private var requestedDownload: CatalogModel? = null // модель, которую пользователь нажал «Скачать»
     private var generateJob: Job? = null
     private var nextId = 0L
     private var nextAttachmentId = 0L
@@ -133,7 +138,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
             _state.update {
                 it.copy(activeModel = null, messages = emptyList(), backend = "",
-                    mediaSupported = false, draft = emptyList(), notice = null)
+                    imagesSupported = false, audioSupported = false, maxImages = 0,
+                    toolsSupported = false, draft = emptyList(), notice = null)
             }
             showLibrary()
         }
@@ -181,7 +187,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
             _state.update {
                 if (wasActive) it.copy(activeModel = null, messages = emptyList(), backend = "",
-                    mediaSupported = false, draft = emptyList(), notice = null)
+                    imagesSupported = false, audioSupported = false, maxImages = 0,
+                    toolsSupported = false, draft = emptyList(), notice = null)
                 else it
             }
             showLibrary()
@@ -194,12 +201,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * Нажата кнопка «Скачать». Если мы на Wi-Fi — качаем сразу (и только по Wi-Fi),
      * иначе спрашиваем: ждать Wi-Fi или продолжить по мобильной сети.
      */
-    fun requestDownload() {
+    fun requestDownload(model: CatalogModel) {
         if (setupJob?.isActive == true) return
+        requestedDownload = model
         if (storage.isOnUnmeteredNetwork()) {
             startDownload(wifiOnly = true)
         } else {
-            _state.update { it.copy(askNetworkChoice = true) }
+            _state.update { it.copy(askNetworkChoice = true, networkChoiceSize = model.sizeLabel) }
         }
     }
 
@@ -210,14 +218,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun startDownload(wifiOnly: Boolean) {
         _state.update { it.copy(askNetworkChoice = false) }
         if (setupJob?.isActive == true) return
-        storage.startDownload(wifiOnly)
+        val model = requestedDownload ?: return
+        storage.startDownload(model, wifiOnly)
         watchDownload()
     }
 
     /** Кнопка на экране ожидания Wi-Fi: не ждать, качать по мобильной сети. */
     fun continueOnMobile() {
         if (!storage.hasPendingDownload()) return
-        storage.startDownload(wifiOnly = false) // сервис перезапустится и докачает с того же места
+        storage.restartPendingDownload(wifiOnly = false) // сервис перезапустится и докачает с того же места
     }
 
     private fun watchDownload() {
@@ -236,7 +245,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 when (s.phase) {
                     DownloadPhase.Done -> {
                         DownloadTracker.status.value = null
-                        loadEngine(ModelStorage.MODEL_FILE_NAME)
+                        val fileName = s.fileName
+                        if (fileName == null) showLibrary() else loadEngine(fileName)
                         return@launch
                     }
                     DownloadPhase.Failed -> {
@@ -303,9 +313,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (name != null) loadEngine(name) else showLibrary()
     }
 
-    private fun loadEngine(fileName: String) {
+    /** [noticeAfter] — что сказать пользователю над полем ввода, когда модель загрузится (например, о смене режима). */
+    private fun loadEngine(fileName: String, noticeAfter: String? = null) {
         if (loadJob?.isActive == true) return // уже идёт загрузка модели
         targetModel = fileName
+        activeProfile = ModelCatalog.profileFor(fileName)
         stopRecording(discard = true)
         _state.update {
             it.copy(phase = Phase.Loading, progress = null, error = null,
@@ -329,9 +341,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 storage.lastUsedModel = fileName
                 _state.update {
                     it.copy(phase = Phase.Chat, messages = emptyList(), backend = loaded.backend,
-                        activeModel = fileName, loadingModel = null, mediaSupported = loaded.media,
+                        activeModel = fileName, loadingModel = null,
+                        imagesSupported = loaded.vision, audioSupported = loaded.audio,
+                        maxImages = if (loaded.vision) activeProfile.maxImages else 0,
+                        toolsSupported = activeProfile.tools,
                         // Текст, который прислали из другого приложения, пока модель грузилась, не теряем
-                        draft = it.draft.filterIsInstance<TextAttachment>(), notice = null)
+                        draft = it.draft.filterIsInstance<TextAttachment>(), notice = noticeAfter)
                 }
             } catch (ce: CancellationException) {
                 throw ce
@@ -348,8 +363,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun conversationConfig(): ConversationConfig {
         eventDefaults.reset()
         return ConversationConfig(
-            systemInstruction = Contents.of(Prompts.systemInstruction(currentTimeForPrompt())),
-            tools = listOf(tool(calendarTools)),
+            systemInstruction = Contents.of(
+                Prompts.systemInstruction(currentTimeForPrompt(), calendar = activeProfile.tools)
+            ),
+            // Модели без нативных вызовов инструментов (Qwen3.5) отдали бы вызов сырым текстом в чат
+            tools = if (activeProfile.tools) listOf(tool(calendarTools)) else emptyList(),
         )
     }
 
@@ -369,12 +387,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Прикрепить изображения (выбор из галереи). */
     fun attachImages(uris: List<Uri>) {
-        if (uris.isEmpty() || _state.value.attaching) return
+        val maxImages = _state.value.maxImages
+        if (uris.isEmpty() || _state.value.attaching || maxImages <= 0) return
         viewModelScope.launch {
             _state.update { it.copy(attaching = true, notice = null) }
             var skipped = false
             for (uri in uris) {
-                if (_state.value.draft.count { it is ImageAttachment } >= MAX_IMAGES) {
+                if (_state.value.draft.count { it is ImageAttachment } >= maxImages) {
                     skipped = true
                     break
                 }
@@ -388,7 +407,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     _state.update { it.copy(notice = "Не удалось добавить изображение: ${t.message ?: t.javaClass.simpleName}") }
                 }
             }
-            if (skipped) _state.update { it.copy(notice = "К сообщению можно приложить не больше $MAX_IMAGES изображений") }
+            if (skipped) {
+                val text = if (maxImages == 1) "К сообщению можно приложить только одно изображение"
+                else "К сообщению можно приложить не больше $maxImages изображений"
+                _state.update { it.copy(notice = text) }
+            }
             _state.update { it.copy(attaching = false) }
         }
     }
@@ -396,7 +419,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** Прикрепить аудиофайл. Длиннее 30 секунд — берём начало. */
     fun attachAudio(uri: Uri) {
         val s = _state.value
-        if (s.attaching) return
+        if (s.attaching || !s.audioSupported) return
         if (s.draft.any { it is AudioAttachment }) {
             showNotice("К сообщению можно приложить только одно аудио. Уберите текущее.")
             return
@@ -461,7 +484,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** Начать запись. Разрешение на микрофон должно быть уже получено. */
     fun startRecording() {
         val s = _state.value
-        if (s.recording || s.attaching || s.phase != Phase.Chat || !s.mediaSupported) return
+        if (s.recording || s.attaching || s.phase != Phase.Chat || !s.audioSupported) return
         if (s.draft.any { it is AudioAttachment }) {
             showNotice("К сообщению можно приложить только одно аудио. Уберите текущее.")
             return
@@ -515,6 +538,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
 
         generateJob = viewModelScope.launch {
+            var recoverModel: String? = null // модель, которую нужно перезапустить в облегчённом режиме
             try {
                 val contents = if (attachments.isEmpty()) null
                 else withContext(Dispatchers.IO) { MessageContentBuilder.build(prompt, attachments) }
@@ -527,9 +551,26 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: CancellationException) {
                 throw e
             } catch (t: Throwable) {
-                appendToBot(botId, "\n\n⚠️ Ошибка: ${t.message ?: t.javaClass.simpleName}")
+                val name = _state.value.activeModel
+                val details = t.message ?: t.javaClass.simpleName
+                when {
+                    name != null && EngineFactory.isResourceFailure(t) && engineFactory.degrade(name) -> {
+                        // После такой ошибки движок уже не рабочий — пересоздаём его с меньшими запросами к памяти
+                        recoverModel = name
+                        appendToBot(botId, "\n\n⚠️ Модели не хватило памяти. Перезапускаю её в облегчённом режиме…")
+                    }
+                    name != null && EngineFactory.isResourceFailure(t) -> appendToBot(
+                        botId,
+                        "\n\n⚠️ Модели не хватило памяти даже в самом лёгком режиме. " +
+                            "Закрой другие приложения или выбери модель поменьше.\n\n$details",
+                    )
+                    else -> appendToBot(botId, "\n\n⚠️ Ошибка: $details")
+                }
             } finally {
                 _state.update { it.copy(generating = false) }
+            }
+            recoverModel?.let {
+                loadEngine(it, noticeAfter = "Модель перезапущена в облегчённом режиме. Отправь сообщение ещё раз.")
             }
         }
     }
@@ -692,9 +733,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * Бросает [IllegalStateException] с понятным пользователю текстом, если модель недоступна.
      * Вызывать из главного потока: загрузка модели управляется оттуда.
      */
-    suspend fun runIsolated(config: ConversationConfig, task: suspend (Conversation) -> Unit) {
+    suspend fun runIsolated(
+        config: ConversationConfig,
+        needsTools: Boolean = false,
+        task: suspend (Conversation) -> Unit,
+    ) {
         isolatedRunLock.withLock {
             val loaded = awaitLoadedEngine()
+            if (needsTools && !activeProfile.tools) throw IllegalStateException(NO_TOOLS_MODEL)
             awaitChatIdle()
             withContext(Dispatchers.Default) {
                 val isolated = loaded.createConversation(config)
@@ -730,6 +776,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val e = engine ?: return
         if (isBusy()) return
         stopRecording(discard = true)
+        val model = _state.value.activeModel
+        if (activeProfile.freshEngineEachChat && model != null) {
+            // Qwen3.5: новый разговор на старом движке подхватывает состояние прошлого — нужен свежий движок
+            loadEngine(model)
+            return
+        }
         viewModelScope.launch {
             withContext(Dispatchers.Default) {
                 runCatching { conversation?.close() }
@@ -780,5 +832,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
         /** Сколько фоновая задача ждёт загрузку модели или конец ответа в чате. */
         private const val MODEL_WAIT_MS = 120_000L
+
+        const val NO_TOOLS_MODEL = "Эта модель не умеет вносить события в календарь. Открой Gemma 4 в списке моделей."
     }
 }

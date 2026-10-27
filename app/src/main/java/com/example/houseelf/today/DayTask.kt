@@ -14,4 +14,7 @@ data class DayTask(
     val end: LocalDateTime,
     val allDay: Boolean,
     val location: String?,
+    val description: String?,
+    /** Шаги дела по порядку; пусто, если дело не разбивали. */
+    val steps: List<String> = emptyList(),
 )

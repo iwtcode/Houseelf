@@ -73,15 +73,27 @@ class ModelStorage(private val context: Context) {
     /** Удаляет одну модель. Вызывается только по явной команде пользователя. */
     fun deleteModel(fileName: String) {
         modelFile(fileName).delete()
+        prefs.edit().remove(KEY_DEGRADE_PREFIX + fileName).apply() // новый файл — новый шанс на полный режим
         if (lastUsedModel == fileName) lastUsedModel = null
     }
 
     // ───────── Скачивание с Hugging Face ─────────
 
     /** Недокачанный файл. Докачка продолжается с его текущего размера. */
-    fun partFile(): File = File(modelsDir, "$MODEL_FILE_NAME.part")
+    fun partFile(fileName: String): File = File(modelsDir, "$fileName.part")
 
     fun hasPendingDownload(): Boolean = prefs.getBoolean(KEY_DOWNLOAD_ACTIVE, false)
+
+    /** Модель из каталога, скачивание которой идёт (или было прервано перезапуском приложения). */
+    fun pendingDownloadModel(): CatalogModel? =
+        ModelCatalog.byFileName(prefs.getString(KEY_DOWNLOAD_FILE, null))
+
+    /** Сколько раз для этой модели приходилось облегчать режим запуска из-за нехватки памяти. */
+    fun degradeLevel(fileName: String): Int = prefs.getInt(KEY_DEGRADE_PREFIX + fileName, 0)
+
+    fun setDegradeLevel(fileName: String, level: Int) {
+        prefs.edit().putInt(KEY_DEGRADE_PREFIX + fileName, level).apply()
+    }
 
     /** true — качать только по Wi-Fi (точнее, по сети без учёта трафика). */
     val downloadWifiOnly: Boolean get() = prefs.getBoolean(KEY_WIFI_ONLY, true)
@@ -97,26 +109,37 @@ class ModelStorage(private val context: Context) {
     }
 
     /**
-     * Запускает скачивание (или докачку, если уже есть недокачанный файл).
+     * Запускает скачивание выбранной модели (или докачку, если для неё уже есть недокачанный файл).
      * Повторный вызов с другим [wifiOnly] перезапускает сервис с новой настройкой.
+     * Скачивать одновременно можно только одну модель.
      */
-    fun startDownload(wifiOnly: Boolean) {
-        prefs.edit().putBoolean(KEY_DOWNLOAD_ACTIVE, true).putBoolean(KEY_WIFI_ONLY, wifiOnly).apply()
+    fun startDownload(model: CatalogModel, wifiOnly: Boolean) {
+        prefs.edit()
+            .putBoolean(KEY_DOWNLOAD_ACTIVE, true)
+            .putBoolean(KEY_WIFI_ONLY, wifiOnly)
+            .putString(KEY_DOWNLOAD_FILE, model.fileName)
+            .apply()
         DownloadTracker.status.value = DownloadStatus(
             if (wifiOnly) DownloadPhase.WaitingWifi else DownloadPhase.WaitingNetwork,
-            partFile().length(), -1L,
+            partFile(model.fileName).length(), -1L, fileName = model.fileName,
         )
         ContextCompat.startForegroundService(context, Intent(context, ModelDownloadService::class.java))
     }
 
+    /** Перезапустить уже идущее скачивание с другой настройкой сети («Скачать по мобильной сети»). */
+    fun restartPendingDownload(wifiOnly: Boolean) {
+        val model = pendingDownloadModel()
+        if (model == null) clearDownloadState() else startDownload(model, wifiOnly)
+    }
+
     /** Приложение перезапустили, а скачивание числится активным, но сервис не работает. */
     fun resumeDownloadIfNeeded() {
-        if (hasPendingDownload() && DownloadTracker.status.value == null) startDownload(downloadWifiOnly)
+        if (hasPendingDownload() && DownloadTracker.status.value == null) restartPendingDownload(downloadWifiOnly)
     }
 
     /** Сервис вызывает это, когда скачивание закончилось (успешно или с ошибкой). */
     fun clearDownloadState() {
-        prefs.edit().remove(KEY_DOWNLOAD_ACTIVE).remove(KEY_WIFI_ONLY).apply()
+        prefs.edit().remove(KEY_DOWNLOAD_ACTIVE).remove(KEY_WIFI_ONLY).remove(KEY_DOWNLOAD_FILE).apply()
     }
 
     /**
@@ -125,10 +148,11 @@ class ModelStorage(private val context: Context) {
      */
     fun cancelDownload() {
         if (!hasPendingDownload()) return
+        val pending = pendingDownloadModel()
         clearDownloadState()
         context.stopService(Intent(context, ModelDownloadService::class.java))
         DownloadTracker.status.value = null
-        partFile().delete()
+        pending?.let { partFile(it.fileName).delete() }
     }
 
     // ───────── Загрузка из памяти телефона ─────────
@@ -196,15 +220,14 @@ class ModelStorage(private val context: Context) {
 
     companion object {
         const val MODEL_EXT = ".litertlm"
-        const val MODEL_FILE_NAME = "gemma-4-E2B-it$MODEL_EXT"
-        const val MODEL_URL =
-            "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/$MODEL_FILE_NAME"
 
         private const val KEY_LAST_USED = "last_used"
         private const val KEY_AUTO_LOAD = "auto_load_on_start"
         private const val KEY_CONFIRM_ACTIONS = "confirm_actions"
         private const val KEY_DOWNLOAD_ACTIVE = "download_active"
         private const val KEY_WIFI_ONLY = "download_wifi_only"
+        private const val KEY_DOWNLOAD_FILE = "download_file"
+        private const val KEY_DEGRADE_PREFIX = "degrade_"
         private const val REPORT_STEP = 8L * 1024 * 1024
     }
 }

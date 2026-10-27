@@ -17,11 +17,25 @@ class ProgressStore(context: Context) {
         return if (last >= today.toEpochDay() - 1) prefs.getInt("streak", 0) else 0
     }
 
+    /** Дела, которые пользователь уже начал (нажал «Начать»). */
+    fun startedKeys(): Set<String> = HashSet(prefs.getStringSet("started", emptySet()) ?: emptySet())
+
+    fun start(key: String) {
+        prefs.edit().putStringSet("started", startedKeys() + key).apply()
+    }
+
+    /** Сколько шагов каждого дела уже пройдено. */
+    fun stepsDone(): Map<String, Int> = prefs.all
+        .filterKeys { it.startsWith(STEP_PREFIX) }
+        .entries.associate { (name, value) -> name.removePrefix(STEP_PREFIX) to (value as? Int ?: 0) }
+
+    fun nextStep(key: String) {
+        prefs.edit().putInt(STEP_PREFIX + key, prefs.getInt(STEP_PREFIX + key, 0) + 1).apply()
+    }
+
     fun complete(key: String, today: LocalDate) {
-        val done = doneKeys().toMutableSet()
-        if (!done.add(key)) return
-        // Старые отметки не копим: ключ заканчивается номером дня
-        done.removeAll { (it.substringAfterLast(':').toLongOrNull() ?: 0L) < today.toEpochDay() - 7 }
+        if (key in doneKeys()) return
+        val done = (doneKeys() + key).withoutStale(today)
 
         val lastDay = prefs.getLong("lastDay", -1L)
         val streak = when {
@@ -31,13 +45,20 @@ class ProgressStore(context: Context) {
         }
         prefs.edit()
             .putStringSet("done", done)
+            .putStringSet("started", startedKeys().withoutStale(today))
+            .remove(STEP_PREFIX + key)
             .putInt("xp", xp + XP_PER_TASK)
             .putInt("streak", streak)
             .putLong("lastDay", today.toEpochDay())
             .apply()
     }
 
+    /** Старые отметки не копим: ключ заканчивается номером дня. */
+    private fun Set<String>.withoutStale(today: LocalDate): Set<String> =
+        filterNot { (it.substringAfterLast(':').toLongOrNull() ?: 0L) < today.toEpochDay() - 7 }.toSet()
+
     companion object {
         const val XP_PER_TASK = 20
+        private const val STEP_PREFIX = "step:"
     }
 }

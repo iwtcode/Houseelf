@@ -10,7 +10,7 @@ data class ModelInfo(val fileName: String, val sizeBytes: Long) {
 /** Человекочитаемое имя модели по имени файла. */
 fun modelDisplayName(fileName: String?): String {
     if (fileName == null) return ""
-    if (fileName == ModelStorage.MODEL_FILE_NAME) return "Gemma 4 E2B"
+    ModelCatalog.byFileName(fileName)?.let { return it.title }
     return fileName.removeSuffix(ModelStorage.MODEL_EXT)
 }
 

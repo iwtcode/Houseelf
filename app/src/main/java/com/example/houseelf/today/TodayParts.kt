@@ -23,6 +23,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -50,14 +54,23 @@ internal fun Stat(icon: ImageVector, value: String, color: Color, description: S
     }
 }
 
+/** Что пользователь может сделать с делом на пути дня. */
+internal class TaskActions(
+    val onStart: () -> Unit,
+    val onNextStep: () -> Unit,
+    val onDone: () -> Unit,
+    val onOpen: () -> Unit,
+)
+
 @Composable
 internal fun PathItem(
     task: DayTask,
     state: NodeState,
     today: LocalDate,
     offset: Dp,
-    onDone: () -> Unit,
-    onOpen: () -> Unit,
+    started: Boolean,
+    stepsDone: Int,
+    actions: TaskActions,
 ) {
     val now = LocalDateTime.now()
     val overdue = state == NodeState.Active && !task.allDay && task.end.isBefore(now)
@@ -75,36 +88,100 @@ internal fun PathItem(
             NodeState.Active -> PathNode(DuoIcons.Calendar, Duo.Amber, Duo.AmberDark, Duo.Ink, ring = true)
             NodeState.Locked -> PathNode(DuoIcons.Lock, Duo.Track, Duo.Line, Duo.Muted, ring = false)
         }
-        Column(Modifier.weight(1f).clickable(onClick = onOpen)) {
-            Text(
-                task.title,
-                style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp),
-                color = if (state == NodeState.Locked) Duo.Muted else Duo.Ink,
-            )
-            val subtitle = when (state) {
-                NodeState.Done -> "Готово · +${ProgressStore.XP_PER_TASK} XP"
-                else -> whenLabel(task, today)
-            }
-            Text(
-                subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = when {
-                    state == NodeState.Done -> Duo.Teal
-                    overdue -> Duo.Red
-                    else -> Duo.Muted
-                },
-            )
-            if (state == NodeState.Active) {
-                Spacer(Modifier.height(8.dp))
-                DuoButton(
-                    "Готово · +${ProgressStore.XP_PER_TASK} XP",
-                    onDone,
-                    Modifier.fillMaxWidth(),
-                    icon = DuoIcons.Check,
-                    height = 44.dp,
+        Column(Modifier.weight(1f)) {
+            Column(Modifier.clickable(onClick = actions.onOpen)) {
+                Text(
+                    task.title,
+                    style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp),
+                    color = if (state == NodeState.Locked) Duo.Muted else Duo.Ink,
+                )
+                val subtitle = when (state) {
+                    NodeState.Done -> "Готово · +${ProgressStore.XP_PER_TASK} XP"
+                    else -> whenLabel(task, today)
+                }
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = when {
+                        state == NodeState.Done -> Duo.Teal
+                        overdue -> Duo.Red
+                        else -> Duo.Muted
+                    },
                 )
             }
+            val completedSteps = if (state == NodeState.Done) task.steps.size else stepsDone.coerceAtMost(task.steps.size)
+            TaskDetails(task, completedSteps, current = state == NodeState.Active && started)
+            if (state == NodeState.Active) {
+                Spacer(Modifier.height(8.dp))
+                ActiveTaskControls(task, started, stepsDone, actions)
+            }
         }
+    }
+}
+
+/** Кнопка текущего дела: «Начать» → («Следующая» →) «Готово». */
+@Composable
+private fun ActiveTaskControls(task: DayTask, started: Boolean, stepsDone: Int, actions: TaskActions) {
+    if (!started) {
+        DuoButton("Начать", actions.onStart, Modifier.fillMaxWidth(), height = 44.dp)
+        return
+    }
+    val steps = task.steps
+    val stepIndex = stepsDone.coerceAtMost(steps.lastIndex)
+    val isLastStep = steps.isEmpty() || stepIndex == steps.lastIndex
+    if (steps.isNotEmpty()) {
+        Text(
+            "Шаг ${stepIndex + 1} из ${steps.size}: ${steps[stepIndex]}",
+            Modifier.padding(bottom = 8.dp),
+            style = MaterialTheme.typography.bodyMedium,
+        )
+    }
+    if (isLastStep) {
+        DuoButton(
+            "Готово · +${ProgressStore.XP_PER_TASK} XP",
+            actions.onDone,
+            Modifier.fillMaxWidth(),
+            icon = DuoIcons.Check,
+            height = 44.dp,
+        )
+    } else {
+        DuoButton("Следующая", actions.onNextStep, Modifier.fillMaxWidth(), height = 44.dp)
+    }
+}
+
+/** Разворачиваемый блок: описание дела и его шаги. Если показывать нечего — ничего не рисуем. */
+@Composable
+private fun TaskDetails(task: DayTask, completedSteps: Int, current: Boolean) {
+    if (task.description == null && task.steps.isEmpty()) return
+    var expanded by remember { mutableStateOf(false) }
+
+    val label = when {
+        task.steps.isNotEmpty() -> "Шаги: $completedSteps из ${task.steps.size}"
+        else -> "Описание"
+    }
+    Text(
+        "$label ${if (expanded) "▴" else "▾"}",
+        Modifier.clickable { expanded = !expanded }.padding(vertical = 6.dp),
+        style = MaterialTheme.typography.labelLarge,
+        color = Duo.TealDark,
+    )
+    if (!expanded) return
+
+    task.description?.let {
+        Text(it, style = MaterialTheme.typography.bodySmall, color = Duo.Muted)
+    }
+    task.steps.forEachIndexed { index, step ->
+        val mark = when {
+            index < completedSteps -> "✓"
+            index == completedSteps && current -> "▶"
+            else -> "○"
+        }
+        Text(
+            "$mark $step",
+            Modifier.padding(top = 4.dp),
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (index < completedSteps) Duo.Muted else Duo.Ink,
+        )
     }
 }
 
