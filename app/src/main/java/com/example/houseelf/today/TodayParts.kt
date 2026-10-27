@@ -43,6 +43,7 @@ import com.example.houseelf.ui.theme.Duo
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 internal enum class NodeState { Done, Active, Locked }
 
@@ -66,7 +67,6 @@ internal class TaskActions(
 internal fun PathItem(
     task: DayTask,
     state: NodeState,
-    today: LocalDate,
     offset: Dp,
     started: Boolean,
     stepsDone: Int,
@@ -97,7 +97,7 @@ internal fun PathItem(
                 )
                 val subtitle = when (state) {
                     NodeState.Done -> "Готово · +${ProgressStore.XP_PER_TASK} XP"
-                    else -> whenLabel(task, today)
+                    else -> whenLabel(task)
                 }
                 Text(
                     subtitle,
@@ -109,6 +109,8 @@ internal fun PathItem(
                     },
                 )
             }
+            // Описание дела свёрнуто, пока человек сам не раскроет
+            task.description?.let { TaskDescription(it) }
             val completedSteps = if (state == NodeState.Done) task.steps.size else stepsDone.coerceAtMost(task.steps.size)
             TaskDetails(task, completedSteps, current = state == NodeState.Active && started)
             if (state == NodeState.Active) {
@@ -119,7 +121,7 @@ internal fun PathItem(
     }
 }
 
-/** Кнопка текущего дела: «Начать» → («Следующая» →) «Готово». */
+/** Кнопка текущего дела: «Начать» → (Дальше →) «Готово». */
 @Composable
 private fun ActiveTaskControls(task: DayTask, started: Boolean, stepsDone: Int, actions: TaskActions) {
     if (!started) {
@@ -145,31 +147,39 @@ private fun ActiveTaskControls(task: DayTask, started: Boolean, stepsDone: Int, 
             height = 44.dp,
         )
     } else {
-        DuoButton("Следующая", actions.onNextStep, Modifier.fillMaxWidth(), height = 44.dp)
+        DuoButton("Дальше", actions.onNextStep, Modifier.fillMaxWidth(), height = 44.dp)
     }
 }
 
-/** Разворачиваемый блок: описание дела и его шаги. Если показывать нечего — ничего не рисуем. */
+/** Разворачиваемое описание дела: по умолчанию свёрнуто. */
+@Composable
+private fun TaskDescription(text: String) {
+    var expanded by remember { mutableStateOf(false) }
+    Text(
+        "Описание ${if (expanded) "▴" else "▾"}",
+        Modifier.clickable { expanded = !expanded }.padding(vertical = 6.dp),
+        style = MaterialTheme.typography.labelLarge,
+        color = Duo.TealDark,
+    )
+    if (expanded) {
+        Text(text, style = MaterialTheme.typography.bodyMedium, color = Duo.Muted)
+    }
+}
+
+/** Разворачиваемый блок с шагами дела. Если дело не разбивали на шаги — ничего не рисуем. */
 @Composable
 private fun TaskDetails(task: DayTask, completedSteps: Int, current: Boolean) {
-    if (task.description == null && task.steps.isEmpty()) return
+    if (task.steps.isEmpty()) return
     var expanded by remember { mutableStateOf(false) }
 
-    val label = when {
-        task.steps.isNotEmpty() -> "Шаги: $completedSteps из ${task.steps.size}"
-        else -> "Описание"
-    }
     Text(
-        "$label ${if (expanded) "▴" else "▾"}",
+        "Шаги: $completedSteps из ${task.steps.size} ${if (expanded) "▴" else "▾"}",
         Modifier.clickable { expanded = !expanded }.padding(vertical = 6.dp),
         style = MaterialTheme.typography.labelLarge,
         color = Duo.TealDark,
     )
     if (!expanded) return
 
-    task.description?.let {
-        Text(it, style = MaterialTheme.typography.bodySmall, color = Duo.Muted)
-    }
     task.steps.forEachIndexed { index, step ->
         val mark = when {
             index < completedSteps -> "✓"
@@ -220,11 +230,32 @@ private fun PathNode(icon: ImageVector, face: Color, edge: Color, tint: Color, r
 
 private val timeFormat = DateTimeFormatter.ofPattern("HH:mm")
 
-private fun whenLabel(task: DayTask, today: LocalDate): String {
-    val day = if (task.date == today) "" else "Завтра · "
+private fun whenLabel(task: DayTask): String {
     val time = if (task.allDay) "Весь день" else "${task.start.format(timeFormat)}–${task.end.format(timeFormat)}"
     val place = if (task.location != null) " · ${task.location}" else ""
-    return day + time + place
+    return time + place
+}
+
+private val dayFormat = DateTimeFormatter.ofPattern("EEEE, d MMMM", Locale.getDefault())
+private val dayWithYearFormat = DateTimeFormatter.ofPattern("EEEE, d MMMM yyyy", Locale.getDefault())
+
+/** «Сегодня», «Завтра» или дата словами — например, «Пятница, 6 ноября». */
+internal fun dayLabel(date: LocalDate, today: LocalDate): String = when (date) {
+    today -> "Сегодня"
+    today.plusDays(1) -> "Завтра"
+    else -> date.format(if (date.year == today.year) dayFormat else dayWithYearFormat)
+        .replaceFirstChar { it.uppercase() }
+}
+
+/** Заголовок дня над его делами на пути. */
+@Composable
+internal fun DayHeader(date: LocalDate, today: LocalDate) {
+    Text(
+        dayLabel(date, today),
+        Modifier.fillMaxWidth(),
+        style = MaterialTheme.typography.titleSmall,
+        color = if (date == today) Duo.TealDark else Duo.Muted,
+    )
 }
 
 internal fun dealsLeft(n: Int): String {

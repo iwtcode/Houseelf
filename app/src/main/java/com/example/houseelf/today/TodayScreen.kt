@@ -100,8 +100,8 @@ fun TodayScreen(
             val tip = when {
                 tasks == null -> ""
                 !calendarGranted -> "Дай доступ к календарю — покажу твои дела на сегодня."
-                all.isEmpty() -> "На сегодня дел нет. Расскажи мне про них — внесу в календарь."
-                todays.isEmpty() -> "На сегодня всё чисто. Завтра уже есть планы."
+                all.isEmpty() -> "В ближайшие $TASKS_AHEAD_DAYS дней дел нет. Расскажи мне про них — внесу в календарь."
+                todays.isEmpty() -> "На сегодня всё чисто. Дальше уже есть планы."
                 active == null -> "Всё сделано. Так держать!"
                 left == 1 -> "Осталось одно дело. Начнём с «${active.title}»?"
                 else -> "Осталось ${dealsLeft(left)}. Начнём с «${active.title}»?"
@@ -120,7 +120,7 @@ fun TodayScreen(
             }
 
             Text(
-                "Путь дня",
+                "Ближайшие $TASKS_AHEAD_DAYS дней",
                 Modifier.padding(start = 20.dp, end = 20.dp, top = 22.dp),
                 style = MaterialTheme.typography.titleLarge,
             )
@@ -134,6 +134,10 @@ fun TodayScreen(
                     !calendarGranted -> DuoButton("Разрешить доступ", onRequestCalendar, Modifier.fillMaxWidth(), icon = DuoIcons.Calendar)
                     all.isEmpty() -> DuoButton("Рассказать домовому", onOpenChat, Modifier.fillMaxWidth(), icon = DuoIcons.Chat)
                     else -> all.forEachIndexed { index, task ->
+                        // Дни идут подряд, поэтому над первым делом каждого дня — заголовок с датой
+                        if (index == 0 || all[index - 1].date != task.date) {
+                            DayHeader(task.date, today)
+                        }
                         val state = when {
                             task.key in done -> NodeState.Done
                             task.key == active?.key -> NodeState.Active
@@ -142,7 +146,6 @@ fun TodayScreen(
                         PathItem(
                             task = task,
                             state = state,
-                            today = today,
                             offset = if (index % 2 == 1) 36.dp else 0.dp,
                             started = task.key in started,
                             stepsDone = stepsDone[task.key] ?: 0,

@@ -77,7 +77,9 @@ fun ChatScreen(
     onStopRecording: () -> Unit,
     onCancelRecording: () -> Unit,
     onRemoveAttachment: (Long) -> Unit,
+    onToggleThinking: () -> Unit,
     eventActions: EventActions,
+    messageActions: MessageActions,
     modifier: Modifier = Modifier,
 ) {
     var input by rememberSaveable { mutableStateOf("") }
@@ -119,13 +121,25 @@ fun ChatScreen(
             ) {
                 Text("Домовой", style = MaterialTheme.typography.titleLarge.copy(fontSize = 18.sp))
                 Text(
-                    if (state.generating) "Думает…" else "● ${modelDisplayName(state.activeModel)} · ${state.backend}",
+                    when {
+                        state.generating -> "Думает…"
+                        state.thinking -> "● ${modelDisplayName(state.activeModel)} · ${state.backend} · раздумья"
+                        else -> "● ${modelDisplayName(state.activeModel)} · ${state.backend}"
+                    },
                     style = MaterialTheme.typography.labelMedium,
                     color = Duo.TealDark,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+            // Режим раздумий: включён — кнопка бирюзовая
+            DuoIconButton(
+                DuoIcons.Bulb,
+                if (state.thinking) "Режим раздумий включён" else "Режим раздумий выключен",
+                onToggleThinking,
+                filled = state.thinking,
+                enabled = !state.generating,
+            )
             DuoIconButton(DuoIcons.Plus, "Новый чат", onNewChat, enabled = !state.generating)
         }
         Box(Modifier.fillMaxWidth().height(2.dp).background(Duo.Line))
@@ -168,7 +182,13 @@ fun ChatScreen(
             ) {
                 val lastId = state.messages.lastOrNull()?.id
                 items(state.messages.asReversed(), key = { it.id }) { message ->
-                    MessageItem(message, eventActions, typing = state.generating && message.id == lastId)
+                    MessageItem(
+                        message, eventActions,
+                        typing = state.generating && message.id == lastId,
+                        actions = messageActions,
+                        isLast = message.id == lastId,
+                        busy = state.generating,
+                    )
                 }
             }
 
@@ -300,13 +320,18 @@ fun ChatScreen(
                     if (state.audioSupported) {
                         DuoIconButton(DuoIcons.Mic, "Голосовое", onStartRecording, enabled = !state.attaching)
                     }
-                    DuoIconButton(
-                        DuoIcons.Send,
-                        "Отправить",
-                        { submit(input) },
-                        filled = true,
-                        enabled = hasContent && !state.generating && !state.attaching,
-                    )
+                    if (state.generating) {
+                        // Пока модель отвечает, вместо «Отправить» — «Прервать»
+                        DuoIconButton(DuoIcons.Stop, "Прервать", messageActions.onStop, filled = true)
+                    } else {
+                        DuoIconButton(
+                            DuoIcons.Send,
+                            "Отправить",
+                            { submit(input) },
+                            filled = true,
+                            enabled = hasContent && !state.attaching,
+                        )
+                    }
                 }
             }
         }

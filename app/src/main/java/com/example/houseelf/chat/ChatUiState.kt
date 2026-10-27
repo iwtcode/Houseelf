@@ -14,6 +14,10 @@ data class ChatMessage(
     val attachments: List<Attachment> = emptyList(),
     /** События, которые модель вносила в календарь в этом ответе. */
     val events: List<EventProposal> = emptyList(),
+    /** Размышления модели перед ответом (когда включён режим раздумий). */
+    val thinking: String = "",
+    /** Ответ прервали кнопкой «Прервать». */
+    val stopped: Boolean = false,
 )
 
 data class UiState(
@@ -44,6 +48,8 @@ data class UiState(
     val autoLoad: Boolean = true,
     /** Спрашивать подтверждение, прежде чем модель что-то сделает (по умолчанию — нет). */
     val confirmActions: Boolean = false,
+    /** Режим раздумий: модель сначала рассуждает, потом отвечает. Дольше, зато точнее. */
+    val thinking: Boolean = false,
     /** Нужно показать системный запрос разрешения на календарь. */
     val needCalendarPermission: Boolean = false,
     /** Движок загружен с поддержкой изображений. */

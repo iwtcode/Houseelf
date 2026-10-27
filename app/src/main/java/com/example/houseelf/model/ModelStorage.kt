@@ -70,6 +70,13 @@ class ModelStorage(private val context: Context) {
             prefs.edit().putBoolean(KEY_CONFIRM_ACTIONS, value).apply()
         }
 
+    /** Режим раздумий в чате. По умолчанию выключен: так ответы приходят быстрее. */
+    var thinkingMode: Boolean
+        get() = prefs.getBoolean(KEY_THINKING, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_THINKING, value).apply()
+        }
+
     /** Удаляет одну модель. Вызывается только по явной команде пользователя. */
     fun deleteModel(fileName: String) {
         modelFile(fileName).delete()
@@ -224,6 +231,7 @@ class ModelStorage(private val context: Context) {
         private const val KEY_LAST_USED = "last_used"
         private const val KEY_AUTO_LOAD = "auto_load_on_start"
         private const val KEY_CONFIRM_ACTIONS = "confirm_actions"
+        private const val KEY_THINKING = "thinking_mode"
         private const val KEY_DOWNLOAD_ACTIVE = "download_active"
         private const val KEY_WIFI_ONLY = "download_wifi_only"
         private const val KEY_DOWNLOAD_FILE = "download_file"

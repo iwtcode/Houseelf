@@ -84,4 +84,15 @@ object DuoIcons {
         "M10 10a2 2 0 1 0 4 0a2 2 0 1 0-4 0",
     )
     val External = icon("external", "M14 4h6v6M20 4l-9 9M18 14v5H5V6h5")
+    val Bulb = icon(
+        "bulb",
+        "M12 2.5a6.5 6.5 0 0 0-3.6 11.9c.7.5 1.1 1.2 1.1 2.1h5c0-.9.4-1.6 1.1-2.1A6.5 6.5 0 0 0 12 2.5z",
+        "M9.5 19.5h5M10.5 22h3",
+    )
+    val Copy = icon(
+        "copy",
+        "M11 9h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-9a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z",
+        "M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1",
+    )
+    val Refresh = icon("refresh", "M22 4v6h-6", "M20 15a9 9 0 1 1-2.1-9.4L22 10")
 }

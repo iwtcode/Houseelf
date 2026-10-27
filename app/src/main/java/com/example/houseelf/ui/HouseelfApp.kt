@@ -5,6 +5,7 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -26,14 +27,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshots.SnapshotStateList
-import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntOffset
@@ -48,6 +45,7 @@ import com.example.houseelf.chat.ChatViewModel
 import com.example.houseelf.chat.Phase
 import com.example.houseelf.chat.ui.ChatScreen
 import com.example.houseelf.chat.ui.EventActions
+import com.example.houseelf.chat.ui.MessageActions
 import com.example.houseelf.library.LibraryScreen
 import com.example.houseelf.library.NetworkChoiceDialog
 import com.example.houseelf.model.CatalogModel
@@ -57,9 +55,10 @@ import com.example.houseelf.today.TodayScreen
 import com.example.houseelf.ui.screens.ErrorScreen
 import com.example.houseelf.ui.screens.LoadingScreen
 import com.example.houseelf.ui.theme.Duo
+import com.example.houseelf.util.copyText
 import com.example.houseelf.util.isActivityStarted
 
-/** Экраны, между которыми человек ходит сам. Служебные (загрузка, прогресс, ошибка) в историю не попадают. */
+/** Экраны, между которыми человек ходит сам. Служебные (загрузка, прогресс, ошибка) сюда не входят. */
 private enum class Dest { Today, Chat, Library }
 
 /** Всё, что может быть на экране, — для анимации переходов. */
@@ -107,37 +106,8 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel(), 
         Phase.Chat -> if (showToday) Dest.Today else Dest.Chat
         else -> null
     }
-    // История: откуда пришли. Системная «Назад» и стрелки в шапках возвращают именно туда.
-    val history: SnapshotStateList<Dest> = rememberSaveable(
-        saver = listSaver<SnapshotStateList<Dest>, Int>(
-            save = { list -> list.map { it.ordinal } },
-            restore = { saved -> saved.map { Dest.values()[it] }.toMutableStateList() },
-        ),
-    ) { mutableStateListOf<Dest>() }
-    var lastDest by rememberSaveable { mutableStateOf(-1) }
     // 1 — вперёд, -1 — назад: от этого зависит, с какой стороны выезжает экран
     var navDirection by remember { mutableIntStateOf(1) }
-
-    LaunchedEffect(destination, state.activeModel) {
-        val d = destination ?: return@LaunchedEffect
-        val prev = lastDest
-        when {
-            // «Сегодня» — дом, а список моделей без модели — начало пути: дальше назад идти некуда
-            d == Dest.Today -> history.clear()
-            d == Dest.Library && state.activeModel == null -> history.clear()
-            prev == -1 || prev == d.ordinal -> Unit
-            else -> {
-                val seen = history.lastIndexOf(d)
-                if (seen >= 0) {
-                    // Вернулись на уже пройденный экран (например, из списка моделей в чат): хвост истории обрезаем
-                    while (history.size > seen) history.removeAt(history.lastIndex)
-                } else {
-                    history.add(Dest.values()[prev])
-                }
-            }
-        }
-        lastDest = d.ordinal
-    }
 
     // Системный выбор файла. Тип */*: у .litertlm нет собственного MIME-типа.
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -213,39 +183,26 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel(), 
         onView = { id -> openIntent(calendarViewIntent(id)) },
     )
 
-    // «Назад» возвращает на предыдущий экран, а не всегда на «Сегодня»
-    val goBack: () -> Unit = back@{
-        val target: Dest = history.lastOrNull() ?: when (destination) {
-            Dest.Chat -> Dest.Today
-            Dest.Library -> if (state.activeModel == null) return@back else if (showToday) Dest.Today else Dest.Chat
-            else -> return@back
-        }
-        if (target == Dest.Library && state.generating) {
-            vm.showNotice("Подожди, пока домовой закончит ответ")
-            return@back
-        }
-        if (history.isNotEmpty()) history.removeAt(history.lastIndex)
-        navDirection = -1
-        lastDest = target.ordinal // уже «пришли» туда: возврат не должен попасть в историю как переход вперёд
-        when (target) {
-            Dest.Today -> {
-                showToday = true
-                if (destination == Dest.Library) vm.backToChat()
-            }
-            Dest.Chat -> {
-                showToday = false
-                if (destination == Dest.Library) vm.backToChat()
-            }
-            Dest.Library -> vm.openLibrary()
-        }
-    }
-    BackHandler(
-        enabled = destination != null && (
-            history.isNotEmpty() || destination == Dest.Chat ||
-                (destination == Dest.Library && state.activeModel != null)
-            ),
-        onBack = goBack,
+    val messageActions = MessageActions(
+        onCopy = { m ->
+            context.copyText(m.text)
+            Toast.makeText(context, "Скопировано", Toast.LENGTH_SHORT).show()
+        },
+        onDelete = vm::deleteMessage,
+        onRepeat = vm::repeatLast,
+        onStop = vm::stopGenerating,
     )
+
+    // «Назад» (кнопка в шапке и системная) всегда возвращает на «Сегодня»: пройденный путь не запоминаем.
+    // Сам «Сегодня» — дом: с него системная «Назад» закрывает приложение, как обычно.
+    val canGoBack = destination == Dest.Chat || (destination == Dest.Library && state.activeModel != null)
+    val goBack: () -> Unit = back@{
+        if (!canGoBack) return@back // с «Сегодня» идти некуда; у списка моделей без модели «домой» ещё нет
+        navDirection = -1
+        showToday = true
+        if (destination == Dest.Library) vm.backToChat()
+    }
+    BackHandler(enabled = canGoBack, onBack = goBack)
 
     val screen = when (state.phase) {
         Phase.Checking, Phase.Loading -> AppScreen.Loading
@@ -327,7 +284,9 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel(), 
                 onStopRecording = { vm.stopRecording(discard = false) },
                 onCancelRecording = { vm.stopRecording(discard = true) },
                 onRemoveAttachment = vm::removeAttachment,
+                onToggleThinking = { vm.setThinking(!state.thinking) },
                 eventActions = eventActions,
+                messageActions = messageActions,
             )
         }
     }

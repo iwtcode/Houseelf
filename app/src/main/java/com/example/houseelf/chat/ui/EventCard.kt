@@ -3,6 +3,8 @@ package com.example.houseelf.chat.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -15,6 +17,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -94,12 +100,27 @@ internal fun EventCard(ev: EventProposal, actions: EventActions, modifier: Modif
                 }
             }
             if (ev.description != null) {
+                // Описание дела свёрнуто, пока человек сам не раскроет
+                var descriptionOpen by remember { mutableStateOf(false) }
                 Text(
-                    ev.description,
-                    Modifier.padding(top = 6.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Duo.Muted,
+                    "Описание ${if (descriptionOpen) "▴" else "▾"}",
+                    Modifier
+                        .padding(top = 6.dp)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                        ) { descriptionOpen = !descriptionOpen },
+                    style = MaterialTheme.typography.labelLarge,
+                    color = Duo.TealDark,
                 )
+                if (descriptionOpen) {
+                    Text(
+                        ev.description,
+                        Modifier.padding(top = 4.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Duo.Muted,
+                    )
+                }
             }
             if (delete && ev.recurring && ev.status == EventStatus.Pending) {
                 Text(

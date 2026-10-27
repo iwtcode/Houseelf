@@ -15,6 +15,7 @@ import com.example.houseelf.calendar.EventStatus
 import com.example.houseelf.calendar.applyCalendarAction
 import com.example.houseelf.calendar.currentTimeForPrompt
 import com.example.houseelf.calendar.hasCalendarPermission
+import com.example.houseelf.media.Attachment
 import com.example.houseelf.media.AudioAttachment
 import com.example.houseelf.media.ImageAttachment
 import com.example.houseelf.media.Media
@@ -65,6 +66,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private var activeProfile: ModelProfile = ModelCatalog.profileFor(null) // что умеет загруженная модель
     private var requestedDownload: CatalogModel? = null // модель, которую пользователь нажал «Скачать»
     private var generateJob: Job? = null
+    @Volatile private var stoppedByUser = false // ответ прервали кнопкой: это не ошибка
+    @Volatile private var rewinding = false // разговор с моделью пересоздаётся (удаление, повтор, смена режима раздумий)
     private var nextId = 0L
     private var nextAttachmentId = 0L
     private val nextEventId = AtomicLong(0)
@@ -89,7 +92,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         Media.clearAttachments(app) // файлы вложений от прошлого запуска больше не нужны
         val models = storage.listModels()
         val autoLoad = storage.autoLoadOnStart
-        _state.update { it.copy(autoLoad = autoLoad, confirmActions = storage.confirmActions) }
+        _state.update { it.copy(autoLoad = autoLoad, confirmActions = storage.confirmActions, thinking = storage.thinkingMode) }
         when {
             storage.hasPendingDownload() -> { // приложение перезапустили во время скачивания
                 storage.resumeDownloadIfNeeded()
@@ -313,8 +316,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (name != null) loadEngine(name) else showLibrary()
     }
 
-    /** [noticeAfter] — что сказать пользователю над полем ввода, когда модель загрузится (например, о смене режима). */
-    private fun loadEngine(fileName: String, noticeAfter: String? = null) {
+    /**
+     * [noticeAfter] — что сказать пользователю над полем ввода, когда модель загрузится (например, о смене режима).
+     * [keep] — переписка, которую нужно сохранить: она остаётся на экране и пересказывается модели.
+     * [onLoaded] — что сделать, когда модель загрузилась и разговор готов.
+     */
+    private fun loadEngine(
+        fileName: String,
+        noticeAfter: String? = null,
+        keep: List<ChatMessage>? = null,
+        onLoaded: (() -> Unit)? = null,
+    ) {
         if (loadJob?.isActive == true) return // уже идёт загрузка модели
         targetModel = fileName
         activeProfile = ModelCatalog.profileFor(fileName)
@@ -327,11 +339,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val loaded = withContext(Dispatchers.Default) {
                     closeEngine() // освобождаем память от предыдущей модели
-                    Media.clearAttachments(getApplication())
+                    // Вложения сохранённой переписки нужны для «Повторить»
+                    if (keep == null) Media.clearAttachments(getApplication())
                     engineFactory.create(fileName)
                 }
                 val c = try {
-                    withContext(Dispatchers.Default) { loaded.engine.createConversation(conversationConfig()) }
+                    withContext(Dispatchers.Default) { loaded.engine.createConversation(conversationConfig(replayOf(keep.orEmpty()))) }
                 } catch (t: Throwable) {
                     runCatching { loaded.engine.close() }
                     throw t
@@ -340,7 +353,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 conversation = c
                 storage.lastUsedModel = fileName
                 _state.update {
-                    it.copy(phase = Phase.Chat, messages = emptyList(), backend = loaded.backend,
+                    it.copy(phase = Phase.Chat, messages = keep ?: emptyList(), backend = loaded.backend,
                         activeModel = fileName, loadingModel = null,
                         imagesSupported = loaded.vision, audioSupported = loaded.audio,
                         maxImages = if (loaded.vision) activeProfile.maxImages else 0,
@@ -348,6 +361,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         // Текст, который прислали из другого приложения, пока модель грузилась, не теряем
                         draft = it.draft.filterIsInstance<TextAttachment>(), notice = noticeAfter)
                 }
+                onLoaded?.invoke()
             } catch (ce: CancellationException) {
                 throw ce
             } catch (t: Throwable) {
@@ -359,13 +373,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Дату и время берём в момент создания диалога — поэтому «завтра» модель понимает правильно. */
-    private fun conversationConfig(): ConversationConfig {
+    /**
+     * Дату и время берём в момент создания диалога — поэтому «завтра» модель понимает правильно.
+     * [history] — прежняя переписка, если разговор пересоздаётся посреди чата.
+     * Режим раздумий тоже задаётся здесь: чтобы его сменить, разговор создаётся заново.
+     */
+    private fun conversationConfig(history: List<Message> = emptyList()): ConversationConfig {
         eventDefaults.reset()
         return ConversationConfig(
             systemInstruction = Contents.of(
                 Prompts.systemInstruction(currentTimeForPrompt(), calendar = activeProfile.tools)
             ),
+            initialMessages = history,
+            extraContext = mapOf("enable_thinking" to _state.value.thinking),
             // Модели без нативных вызовов инструментов (Qwen3.5) отдали бы вызов сырым текстом в чат
             tools = if (activeProfile.tools) listOf(tool(calendarTools)) else emptyList(),
         )
@@ -517,7 +537,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     // ───────── Чат ─────────
 
     fun send(text: String) {
-        val conv = conversation ?: return
+        if (conversation == null) return
         val s = _state.value
         val prompt = text.trim()
         val attachments = s.draft
@@ -526,15 +546,24 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             showNotice("Домовой сейчас вносит события в календарь — подожди секунду")
             return
         }
-        if (s.generating || s.recording || s.attaching) return
+        if (s.generating || s.recording || s.attaching || rewinding) return
+        submit(prompt, attachments, clearDraft = true)
+    }
 
+    /** Отправляет сообщение модели и начинает писать ответ. [clearDraft] — убрать ли вложения из поля ввода. */
+    private fun submit(prompt: String, attachments: List<Attachment>, clearDraft: Boolean) {
+        val conv = conversation ?: return
         val botId = nextId + 1
         currentBotId = botId
+        stoppedByUser = false
         val user = ChatMessage(nextId, fromUser = true, text = prompt, attachments = attachments)
         val bot = ChatMessage(botId, fromUser = false, text = "")
         nextId += 2
         _state.update {
-            it.copy(messages = it.messages + user + bot, generating = true, draft = emptyList(), notice = null)
+            it.copy(
+                messages = it.messages + user + bot, generating = true,
+                draft = if (clearDraft) emptyList() else it.draft, notice = null,
+            )
         }
 
         generateJob = viewModelScope.launch {
@@ -545,8 +574,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 withContext(Dispatchers.Default) {
                     val flow = if (contents == null) conv.sendMessageAsync(prompt)
                     else conv.sendMessageAsync(Contents.of(contents))
-                    // Каждый элемент потока — очередной кусочек ответа
-                    flow.collect { chunk -> appendToBot(botId, chunk.toString()) }
+                    // Каждый элемент потока — очередной кусочек ответа; размышления идут отдельным каналом
+                    flow.collect { chunk ->
+                        appendToBot(botId, chunk.toString(), chunk.channels["thought"]?.toString().orEmpty())
+                    }
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -554,6 +585,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val name = _state.value.activeModel
                 val details = t.message ?: t.javaClass.simpleName
                 when {
+                    stoppedByUser -> Unit // движок мог ответить ошибкой на отмену — пользователю она не нужна
                     name != null && EngineFactory.isResourceFailure(t) && engineFactory.degrade(name) -> {
                         // После такой ошибки движок уже не рабочий — пересоздаём его с меньшими запросами к памяти
                         recoverModel = name
@@ -573,6 +605,116 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 loadEngine(it, noticeAfter = "Модель перезапущена в облегчённом режиме. Отправь сообщение ещё раз.")
             }
         }
+    }
+
+    // ───────── Действия с сообщениями и режим раздумий ─────────
+
+    /**
+     * Включить или выключить режим раздумий. Режим задаётся при создании разговора, поэтому разговор
+     * создаётся заново; прежняя переписка остаётся на экране и пересказывается модели.
+     */
+    fun setThinking(enabled: Boolean) {
+        val s = _state.value
+        if (enabled == s.thinking || isBusy()) return
+        storage.thinkingMode = enabled
+        _state.update { it.copy(thinking = enabled) }
+        if (engine != null && s.phase == Phase.Chat) rewindTo(s.messages)
+    }
+
+    /** Прервать ответ, который сейчас пишется. Уже написанное остаётся в чате. */
+    fun stopGenerating() {
+        if (!_state.value.generating) return
+        stoppedByUser = true
+        val id = currentBotId
+        _state.update { s -> s.copy(messages = s.messages.map { if (it.id == id) it.copy(stopped = true) else it }) }
+        runCatching { conversation?.cancelProcess() } // остановить расчёт в движке
+        generateJob?.cancel()
+    }
+
+    /** Удалить сообщение. Вопрос и ответ идут парой, поэтому исчезают вместе, а модель «забывает» этот обмен. */
+    fun deleteMessage(id: Long) {
+        val s = _state.value
+        if (isBusy() || s.recording || s.attaching || engine == null) return
+        val index = s.messages.indexOfFirst { it.id == id }
+        if (index < 0) return
+        val message = s.messages[index]
+        val from = if (message.fromUser) index else if (s.messages.getOrNull(index - 1)?.fromUser == true) index - 1 else index
+        val to = if (message.fromUser && s.messages.getOrNull(index + 1)?.fromUser == false) index + 1 else index
+        val removed = s.messages.subList(from, to + 1).toList()
+        removed.flatMap { it.attachments }.forEach { Media.deleteFile(it) }
+        rewindTo(s.messages.filterIndexed { i, _ -> i < from || i > to })
+    }
+
+    /** Повторить последний ответ: модель отвечает на тот же вопрос заново. */
+    fun repeatLast() {
+        val s = _state.value
+        if (isBusy() || s.recording || s.attaching || conversation == null) return
+        val answer = s.messages.lastOrNull()?.takeIf { !it.fromUser } ?: return
+        val question = s.messages.getOrNull(s.messages.lastIndex - 1)?.takeIf { it.fromUser } ?: return
+        if (answer.events.any { it.status == EventStatus.Added || it.status == EventStatus.NeedsPermission }) {
+            // Повтор снова вызвал бы инструмент и записал те же события второй раз
+            showNotice("В этом ответе уже внесены события в календарь — повтор создал бы их второй раз")
+            return
+        }
+        rewindTo(s.messages.dropLast(2)) { submit(question.text, question.attachments, clearDraft = false) }
+    }
+
+    /**
+     * Пересоздаёт разговор с моделью так, будто в нём была только переписка [history].
+     * На экране она появляется сразу. [then] вызывается, когда разговор готов.
+     */
+    private fun rewindTo(history: List<ChatMessage>, then: (() -> Unit)? = null) {
+        val e = engine ?: return
+        val model = _state.value.activeModel ?: return
+        val dirty = _state.value.messages.isNotEmpty()
+        stopRecording(discard = true)
+        _state.update { it.copy(messages = history, notice = null) }
+        if (activeProfile.freshEngineEachChat && dirty) {
+            // Qwen3.5: новый разговор на старом движке «помнит» прошлый — нужен свежий движок
+            loadEngine(model, keep = history, onLoaded = then)
+            return
+        }
+        rewinding = true
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.Default) {
+                    runCatching { conversation?.close() }
+                    conversation = e.createConversation(conversationConfig(replayOf(history)))
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                conversation = null
+                _state.update { it.copy(notice = "Не удалось обновить разговор: ${t.message ?: t.javaClass.simpleName}. Начни новый чат.") }
+                return@launch
+            } finally {
+                rewinding = false
+            }
+            then?.invoke()
+        }
+    }
+
+    /**
+     * Переписка в виде, понятном модели: пары «вопрос — ответ» с текстом.
+     * Вложения, размышления и карточки событий заново не пересказываются.
+     */
+    private fun replayOf(messages: List<ChatMessage>): List<Message> {
+        val result = mutableListOf<Message>()
+        var i = 0
+        while (i + 1 < messages.size) {
+            val question = messages[i]
+            val answer = messages[i + 1]
+            if (question.fromUser && !answer.fromUser) {
+                if (answer.text.isNotBlank()) {
+                    result += Message.user(question.text.ifBlank { ATTACHMENT_PLACEHOLDER })
+                    result += Message.model(answer.text.trim())
+                }
+                i += 2
+            } else {
+                i++
+            }
+        }
+        return result
     }
 
     // ───────── Действия модели: календарь ─────────
@@ -628,7 +770,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun addEvent(ev: EventProposal) {
         val botId = currentBotId
         _state.update { s ->
-            s.copy(messages = s.messages.map { if (it.id == botId) it.copy(events = it.events + ev) else it })
+            // Запоминаем, на каком месте ответа модель вызвала инструмент: текст после вызова должен идти после карточки
+            s.copy(messages = s.messages.map {
+                if (it.id == botId) it.copy(events = it.events + ev.copy(textPos = it.text.length)) else it
+            })
         }
     }
 
@@ -725,7 +870,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     // ───────── Фоновые задачи без чата (Домовой.Событие) ─────────
 
     /** Чат отвечает или модель занята фоновой задачей: пока так, менять модель и переписку нельзя. */
-    private fun isBusy(): Boolean = _state.value.generating || isolatedRunLock.isLocked
+    private fun isBusy(): Boolean = _state.value.generating || isolatedRunLock.isLocked || rewinding
 
     /**
      * Выполняет разовую задачу модели в отдельном разговоре: переписка в чате не меняется и не видит задачу.
@@ -792,9 +937,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun appendToBot(id: Long, chunk: String) {
+    private fun appendToBot(id: Long, chunk: String, thought: String = "") {
+        if (chunk.isEmpty() && thought.isEmpty()) return
         _state.update { s ->
-            s.copy(messages = s.messages.map { if (it.id == id) it.copy(text = it.text + chunk) else it })
+            s.copy(messages = s.messages.map {
+                if (it.id == id) it.copy(text = it.text + chunk, thinking = it.thinking + thought) else it
+            })
         }
     }
 
@@ -832,6 +980,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
         /** Сколько фоновая задача ждёт загрузку модели или конец ответа в чате. */
         private const val MODEL_WAIT_MS = 120_000L
+
+        /** Вместо вопроса, у которого был только файл: модель не принимает пустые сообщения. */
+        private const val ATTACHMENT_PLACEHOLDER = "(вложение)"
 
         const val NO_TOOLS_MODEL = "Эта модель не умеет вносить события в календарь. Открой Gemma 4 в списке моделей."
     }

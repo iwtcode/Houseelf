@@ -10,12 +10,16 @@ import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.ZoneOffset
 
-/** События на сегодня и завтра. Без разрешения на календарь возвращает пустой список. */
+/** На сколько дней вперёд (кроме сегодняшнего) показываем дела на вкладке «Сегодня». */
+const val TASKS_AHEAD_DAYS = 30L
+
+/** События на сегодня и ближайшие [TASKS_AHEAD_DAYS] дней. Без разрешения на календарь возвращает пустой список. */
 fun loadTasks(context: Context, today: LocalDate): List<DayTask> {
     if (!hasCalendarPermission(context)) return emptyList()
     val zone = ZoneId.systemDefault()
+    val lastDay = today.plusDays(TASKS_AHEAD_DAYS)
     val from = today.atStartOfDay(zone).toInstant().toEpochMilli()
-    val to = today.plusDays(2).atStartOfDay(zone).toInstant().toEpochMilli()
+    val to = lastDay.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
 
     val uri = CalendarContract.Instances.CONTENT_URI.buildUpon()
     ContentUris.appendId(uri, from)
@@ -60,7 +64,7 @@ fun loadTasks(context: Context, today: LocalDate): List<DayTask> {
                 }
                 // Многодневное событие, начавшееся раньше, показываем как дело на сегодня
                 val date = if (start.toLocalDate().isBefore(today)) today else start.toLocalDate()
-                if (date.isAfter(today.plusDays(1))) continue
+                if (date.isAfter(lastDay)) continue
 
                 result += DayTask(
                     key = "$eventId:${date.toEpochDay()}",

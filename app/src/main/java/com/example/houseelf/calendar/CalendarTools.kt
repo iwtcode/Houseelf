@@ -3,6 +3,7 @@ package com.example.houseelf.calendar
 import android.content.Context
 import com.example.houseelf.today.SubtaskStore
 import com.example.houseelf.today.parseSteps
+import com.example.houseelf.today.stepsFromNotes
 import com.google.ai.edge.litertlm.Tool
 import com.google.ai.edge.litertlm.ToolParam
 import com.google.ai.edge.litertlm.ToolSet
@@ -23,6 +24,10 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * Модель умеет: посмотреть календарь ([listCalendarEvents]), добавить, изменить и удалить событие,
  * а также разбить дело на шаги ([setTaskSteps]).
+ *
+ * Менять, удалять и разбивать на шаги можно по названию дела: маленькая модель часто теряет номер события
+ * между вызовами или передаёт его не тем типом, поэтому одним вызовом надёжнее. Номер ([findEvent]) остаётся
+ * запасным путём.
  *
  * [handler] делает всю работу (запись или показ карточки) и возвращает ответ для модели:
  * успех или нет + текст, по которому она сообщит пользователю результат.
@@ -50,18 +55,21 @@ class CalendarTools(
     @Tool(
         description = "Adds an event to the user's calendar. Call it whenever the user asks to add, " +
             "schedule, book or remind about a meeting, appointment, event, task or deadline. " +
+            "Always put the details of the task (what to buy, take, prepare or do) into notes. " +
             "Report the outcome to the user exactly as the tool result says."
     )
     fun addCalendarEvent(
         @ToolParam(description = "Very short title, 1-3 words, in the user's language, without date, time or details, e.g. 'Поход в магазин'. Omit if the text gives no title") title: String? = null,
+        @ToolParam(description = "The task description: everything the user said about what to do, buy, take or prepare, e.g. 'купить молоко, хлеб, яйца и сыр'. Fill it whenever the message has any such details. Leave empty only if there are none") notes: String? = null,
         @ToolParam(description = "Start date and time in ISO 8601 local time without time zone, e.g. 2026-10-25T15:00. For an all-day event use only the date, e.g. 2026-10-25. Omit if the text gives no date") start: String? = null,
         @ToolParam(description = "End date and time in the same format. Omit if the user did not say when it ends") end: String? = null,
         @ToolParam(description = "Place of the event, if mentioned") location: String? = null,
-        @ToolParam(description = "Details of the event: what to do, buy or take, e.g. 'купить молоко, хлеб, яйца и сыр'. Put here everything that is not the title, date, time or place") description: String? = null,
         @ToolParam(description = "true if the event lasts all day or the user gave no time, otherwise false") allDay: Boolean = false,
     ): Map<String, Any> {
         return try {
-            val name = resolveTitle(title)
+            // Если модель сложила детали в название («Поход в магазин: купить молоко») и пропустила notes — разделяем сами
+            val (cleanTitle, cleanNotes) = separateNotes(title, notes)
+            val name = resolveTitle(cleanTitle)
                 ?: return fail("The title is empty. Ask the user what the event is called.")
             val (startValue, startHasTime) = resolveStart(start)
                 ?: return fail(startProblem(start))
@@ -85,7 +93,7 @@ class CalendarTools(
                     end = to,
                     allDay = isAllDay,
                     location = location?.trim()?.takeIf { it.isNotEmpty() },
-                    description = description?.trim()?.takeIf { it.isNotEmpty() },
+                    description = cleanNotes,
                 )
             )
             mapOf("status" to (if (ok) "ok" else "error"), "message" to message)
@@ -97,8 +105,7 @@ class CalendarTools(
     @Tool(
         description = "Reads the user's calendar and returns the events of a period. Call it whenever the user asks " +
             "what is planned or scheduled (today, tomorrow, this week, this month or on a given date), " +
-            "whether a day is free, and ALWAYS before changing or deleting an event, because the result contains " +
-            "the event ids. Tell the user only what the result says; never invent events."
+            "whether a day is free. Tell the user only what the result says; never invent events."
     )
     fun listCalendarEvents(
         @ToolParam(description = "One of: today, tomorrow, week (the next 7 days starting today), month (the next 30 days starting today). For any other period leave it as today and set from and to") period: String = "today",
@@ -153,30 +160,30 @@ class CalendarTools(
 
     @Tool(
         description = "Changes an existing event in the user's calendar: its title, time, place or notes. " +
-            "Only the fields you pass are changed. Call it when the user asks to move, reschedule, rename or edit an event. " +
-            "You need the event id: get it from listCalendarEvents first. " +
+            "Only the fields you pass are changed. Call it right away when the user asks to move, reschedule, rename or edit an event: " +
+            "pass the current title of the event in eventTitle, no need to read the calendar first. " +
             "Report the outcome to the user exactly as the tool result says."
     )
     fun updateCalendarEvent(
-        @ToolParam(description = "The event id from listCalendarEvents, digits only") eventId: String,
+        @ToolParam(description = "Current title of the event to change, as the user names it, e.g. 'Поход в магазин'") eventTitle: String? = null,
         @ToolParam(description = "New title. Omit to keep the current one") title: String? = null,
         @ToolParam(description = "New start in ISO 8601 local time, e.g. 2026-10-25T15:00. A date only (2026-10-25) moves a timed event to that day and keeps its time. Omit to keep the current start") start: String? = null,
         @ToolParam(description = "New end in the same format. Omit to keep the current length of the event") end: String? = null,
         @ToolParam(description = "New place. Omit to keep the current one") location: String? = null,
-        @ToolParam(description = "New notes. Omit to keep the current ones") description: String? = null,
+        @ToolParam(description = "New task description (notes). Omit to keep the current one") notes: String? = null,
+        @ToolParam(description = "Optional: the event id from listCalendarEvents, digits only. Not needed when eventTitle is given") eventId: String? = null,
     ): Map<String, Any> {
         return try {
-            val id = parseEventId(eventId)
-                ?: return fail("The event id must be the number from listCalendarEvents. Call listCalendarEvents first.")
-            if (id !in knownIds) return fail(UNKNOWN_ID)
             if (!ensurePermission()) return fail(NO_ACCESS)
+            val lookup = findEvent(eventTitle, eventId, pickNearest = false)
+            val id = lookup.id ?: return lookup.problem!!
             val cur = loadCalendarEvent(context, id)
-                ?: return fail("There is no event with id $id any more. Call listCalendarEvents again.")
+                ?: return fail("The event is not in the calendar any more. Tell the user.")
             if (!cur.editable) return fail("The event '${cur.title}' is in a read-only calendar and cannot be changed. Tell the user.")
 
             val newTitle = title?.trim()?.takeIf { it.isNotEmpty() } ?: cur.title
             val newLocation = location?.trim()?.takeIf { it.isNotEmpty() } ?: cur.location
-            val newDescription = description?.trim()?.takeIf { it.isNotEmpty() } ?: cur.description
+            val newDescription = notes?.trim()?.takeIf { it.isNotEmpty() } ?: cur.description
 
             val startRaw = start?.trim()?.takeIf { it.isNotEmpty() }
             val endRaw = end?.trim()?.takeIf { it.isNotEmpty() }
@@ -253,21 +260,21 @@ class CalendarTools(
 
     @Tool(
         description = "Deletes an event from the user's calendar. Call it only when the user clearly asks to delete, " +
-            "remove or cancel a specific event. You need the event id: get it from listCalendarEvents first. " +
-            "If several events could match, ask the user which one. Never delete events the user did not ask about. " +
+            "remove or cancel a specific event: pass its title in eventTitle, no need to read the calendar first. " +
+            "If the result says several events match, ask the user which one. Never delete events the user did not ask about. " +
             "Report the outcome to the user exactly as the tool result says."
     )
     fun deleteCalendarEvent(
-        @ToolParam(description = "The event id from listCalendarEvents, digits only") eventId: String,
+        @ToolParam(description = "Title of the event to delete, as the user names it, e.g. 'Уборка'") eventTitle: String? = null,
         @ToolParam(description = "true only if the event repeats and the user agreed to delete ALL its repeats") deleteWholeSeries: Boolean = false,
+        @ToolParam(description = "Optional: the event id from listCalendarEvents, digits only. Not needed when eventTitle is given") eventId: String? = null,
     ): Map<String, Any> {
         return try {
-            val id = parseEventId(eventId)
-                ?: return fail("The event id must be the number from listCalendarEvents. Call listCalendarEvents first.")
-            if (id !in knownIds) return fail(UNKNOWN_ID)
             if (!ensurePermission()) return fail(NO_ACCESS)
+            val lookup = findEvent(eventTitle, eventId, pickNearest = false)
+            val id = lookup.id ?: return lookup.problem!!
             val cur = loadCalendarEvent(context, id)
-                ?: return fail("There is no event with id $id any more. Call listCalendarEvents again.")
+                ?: return fail("The event is not in the calendar any more. Tell the user.")
             if (!cur.editable) return fail("The event '${cur.title}' is in a read-only calendar and cannot be deleted. Tell the user.")
             if (cur.recurring && !deleteWholeSeries) {
                 return fail("'${cur.title}' is a recurring event: deleting it removes ALL its repeats, not just one. " +
@@ -296,31 +303,91 @@ class CalendarTools(
 
     @Tool(
         description = "Splits a task into steps (subtasks) that the user sees in the Today tab. " +
-            "Call it when the user asks to break a task into steps or subtasks. " +
-            "You need the event id: get it from listCalendarEvents first. " +
-            "Base the steps on the task notes if it has them. Report the outcome to the user exactly as the tool result says."
+            "Call it right away when the user asks to break a task into steps or subtasks: " +
+            "pass the title of the task in taskTitle and the steps in steps, no need to read the calendar first. " +
+            "Base the steps on the task notes if it has them, otherwise on its title. " +
+            "Calling it again replaces the old steps. Report the outcome to the user exactly as the tool result says."
     )
     fun setTaskSteps(
-        @ToolParam(description = "The event id from listCalendarEvents, digits only") eventId: String,
-        @ToolParam(description = "3 to 6 short steps, one per line, in the user's language. Each step is an action of 2-6 words. No numbering") steps: String,
+        @ToolParam(description = "Title of the task to split, as the user names it, e.g. 'Поход в магазин'. Omit to take the nearest upcoming task") taskTitle: String? = null,
+        @ToolParam(description = "3 to 6 short steps, one per line, in the user's language. Each step is an action of 2-6 words. No numbering") steps: String? = null,
+        @ToolParam(description = "Optional: the event id from listCalendarEvents, digits only. Not needed when taskTitle is given") eventId: String? = null,
     ): Map<String, Any> {
         return try {
-            val id = parseEventId(eventId)
-                ?: return fail("The event id must be the number from listCalendarEvents. Call listCalendarEvents first.")
             if (!ensurePermission()) return fail(NO_ACCESS)
+            val lookup = findEvent(taskTitle, eventId, pickNearest = true)
+            val id = lookup.id ?: return lookup.problem!!
             val task = loadCalendarEvent(context, id)
-                ?: return fail("There is no event with id $id any more. Call listCalendarEvents again.")
-            val parsed = parseSteps(steps)
-            if (parsed.size < MIN_STEPS) return fail("Give at least $MIN_STEPS short steps, one per line.")
+                ?: return fail("The task is not in the calendar any more. Tell the user.")
+            // Если модель прислала мало шагов или не прислала совсем — делим описание дела сами
+            var parsed = parseSteps(steps.orEmpty())
+            if (parsed.size < MIN_STEPS) parsed = stepsFromNotes(task.description)
+            if (parsed.size < MIN_STEPS) {
+                return fail("No steps were given. Call the tool again with 3 to 6 short steps, one per line, in the steps argument.")
+            }
 
             subtasks.save(id, parsed)
-            ok("The task '${task.title}' now has ${parsed.size} steps. The user sees them in the Today tab. Tell the user briefly.")
+            ok("The task '${task.title}' now has ${parsed.size} steps: ${parsed.joinToString("; ")}. " +
+                "The user sees them in the Today tab. Tell the user briefly.")
         } catch (t: Throwable) {
             fail("Failed to save the steps: ${t.message ?: t.javaClass.simpleName}")
         }
     }
 
+    /** Результат поиска дела: либо номер, либо готовый ответ-ошибка для модели. */
+    private class Lookup(val id: Long? = null, val problem: Map<String, Any>? = null)
+
+    /**
+     * Находит дело для изменения, удаления или шагов. Сначала по номеру (если модель его знает из просмотра
+     * календаря), иначе по названию среди дел за неделю назад и ближайшие три месяца: сначала будущие, потом прошедшие.
+     * Если подходит несколько разных дел: при [pickNearest] берём ближайшее, иначе просим модель спросить пользователя.
+     */
+    private fun findEvent(title: String?, idRaw: String?, pickNearest: Boolean): Lookup {
+        val byId = idRaw?.let { parseEventId(it) }
+        if (byId != null && byId in knownIds) return Lookup(id = byId)
+
+        val today = LocalDate.now()
+        val ordered = loadCalendarEvents(context, today.minusDays(SEARCH_DAYS_BACK), today.plusDays(SEARCH_DAYS_AHEAD))
+            .sortedWith(compareBy<CalendarEventInfo>({ it.end.toLocalDate().isBefore(today) }, { it.start }))
+            .distinctBy { it.id } // у повторяющегося события много вхождений, а дело одно
+
+        val query = normalizeTitle(title.orEmpty())
+        if (query.isEmpty()) {
+            if (!pickNearest) return Lookup(problem = fail("Which event? Ask the user for the name of the event."))
+            val nearest = ordered.firstOrNull() ?: return Lookup(problem = fail(NOTHING_PLANNED))
+            return Lookup(id = nearest.id)
+        }
+
+        val scored = ordered.map { it to titleScore(query, normalizeTitle(it.title)) }.filter { it.second > 0 }
+        if (scored.isEmpty()) {
+            return Lookup(problem = fail("No event named '${title?.trim()}' was found in the calendar. " +
+                "Do nothing and tell the user that there is no such event."))
+        }
+        val best = scored.maxOf { it.second }
+        val top = scored.filter { it.second == best }.map { it.first }
+        if (top.size == 1 || pickNearest) return Lookup(id = top.first().id)
+
+        top.forEach { knownIds.add(it.id) }
+        val variants = top.take(MAX_AMBIGUOUS).joinToString("; ") {
+            "[id=${it.id}] ${it.title.take(60)} (${formatWhen(it.start, it.end, it.allDay)})"
+        }
+        return Lookup(problem = fail("Several events match: $variants. " +
+            "Ask the user which one, then call the tool again with that event's id in eventId."))
+    }
+
     private fun ok(message: String): Map<String, Any> = mapOf("status" to "ok", "message" to message)
+
+    /** Название и описание. Если описания нет, а в названии есть «двоеточие и детали», делим по двоеточию. */
+    private fun separateNotes(title: String?, notes: String?): Pair<String?, String?> {
+        val t = title?.trim()
+        val n = notes?.trim()?.takeIf { it.isNotEmpty() }
+        if (n != null || t == null) return t to n
+        val colon = t.indexOf(':')
+        if (colon < 1 || colon == t.lastIndex) return t to null
+        val head = t.substring(0, colon).trim()
+        val tail = t.substring(colon + 1).trim()
+        return if (head.isNotEmpty() && tail.isNotEmpty()) head to tail else t to null
+    }
 
     /** Название из запроса модели, а если его нет — название по умолчанию (только когда оно разрешено). */
     private fun resolveTitle(raw: String?): String? =
@@ -334,6 +401,32 @@ class CalendarTools(
     private fun startProblem(raw: String?): String =
         if (raw.isNullOrBlank()) "The start is missing. Ask the user when the event takes place."
         else "Could not read the start '$raw'. Use the format 2026-10-25T15:00 or 2026-10-25."
+
+    /** Название для сравнения: строчные буквы, «ё» как «е», без знаков препинания и лишних пробелов. */
+    private fun normalizeTitle(raw: String): String = raw.lowercase(Locale.ROOT)
+        .replace('ё', 'е')
+        .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
+        .trim()
+
+    /** Насколько название события подходит под запрос: 0 — совсем не подходит. */
+    private fun titleScore(query: String, title: String): Int {
+        if (title.isEmpty()) return 0
+        if (query == title) return 100
+        if (title in query || query in title) return 80
+        val q = query.split(' ').filter { it.length >= MIN_WORD }
+        val t = title.split(' ').filter { it.length >= MIN_WORD }
+        if (q.isEmpty() || t.isEmpty()) return 0
+        val matched = q.count { a -> t.any { b -> sameWord(a, b) } }
+        // Совпала хотя бы половина слов запроса: «уборка» подходит к «Генеральная уборка»
+        return if (matched > 0 && matched * 2 >= q.size) 10 * matched else 0
+    }
+
+    /** Слова совпадают, если различаются только окончанием: «уборку» и «уборка», «врачу» и «врач». */
+    private fun sameWord(a: String, b: String): Boolean {
+        val n = minOf(a.length, b.length)
+        val common = a.commonPrefixWith(b).length
+        return common >= MIN_WORD && common >= n - 2
+    }
 
     private fun readDay(raw: String): LocalDate? = parseDateTime(raw)?.first?.toLocalDate()
 
@@ -361,13 +454,16 @@ class CalendarTools(
 
     private companion object {
         const val MAX_LISTED = 40
-        const val MAX_NOTES_LENGTH = 120
+        const val MAX_NOTES_LENGTH = 200
         const val MIN_STEPS = 2
         const val MAX_RANGE_DAYS = 92
+        const val SEARCH_DAYS_BACK = 7L
+        const val SEARCH_DAYS_AHEAD = 90L
+        const val MAX_AMBIGUOUS = 5
+        const val MIN_WORD = 3
+        const val NOTHING_PLANNED = "There are no events in the calendar. Tell the user."
         const val NO_ACCESS = "The user has not allowed access to the calendar, so it cannot be used. " +
             "Tell the user that calendar access is needed and they can allow it in the phone settings."
-        const val UNKNOWN_ID = "That event id was not in the calendar results. Call listCalendarEvents first " +
-            "and use an id from its result."
     }
 
     private fun fail(message: String): Map<String, Any> = mapOf("status" to "error", "message" to message)

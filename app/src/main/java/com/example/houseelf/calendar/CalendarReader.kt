@@ -101,6 +101,7 @@ fun loadCalendarEvents(context: Context, first: LocalDate, last: LocalDate): Lis
             CalendarContract.Instances.EVENT_LOCATION,
             CalendarContract.Instances.RRULE,
             CalendarContract.Instances.RDATE,
+            CalendarContract.Instances.DESCRIPTION,
         ),
         null, null,
         "${CalendarContract.Instances.BEGIN} ASC",
@@ -122,7 +123,8 @@ fun loadCalendarEvents(context: Context, first: LocalDate, last: LocalDate): Lis
                 end = end,
                 allDay = allDay,
                 location = c.getString(5)?.takeIf { it.isNotBlank() },
-                description = null,
+                // Без описания модель не увидит заметки дела и не сможет разбить его на шаги по ним
+                description = c.getString(8)?.takeIf { it.isNotBlank() },
                 recurring = !c.getString(6).isNullOrBlank() || !c.getString(7).isNullOrBlank(),
                 editable = true, // точный ответ даёт loadCalendarEvent перед изменением
             )

@@ -5,6 +5,7 @@ import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.provider.CalendarContract
+import com.example.houseelf.today.SubtaskStore
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZoneOffset
@@ -100,5 +101,6 @@ fun applyEventDelete(context: Context, ev: EventProposal): Long {
     if (!cur.editable) throw IllegalStateException("этот календарь только для чтения")
     val rows = context.contentResolver.delete(eventUri(id), null, null)
     if (rows < 1) throw IllegalStateException("календарь не удалил событие")
+    SubtaskStore(context).clear(id) // шаги удалённого дела больше никому не нужны
     return id
 }
