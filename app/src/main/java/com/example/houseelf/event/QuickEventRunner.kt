@@ -7,7 +7,6 @@ import com.example.houseelf.calendar.currentTimeForPrompt
 import com.example.houseelf.calendar.hasCalendarPermission
 import com.example.houseelf.chat.ChatViewModel
 import com.google.ai.edge.litertlm.*
-import java.time.LocalDate
 
 /**
  * Один прогон Домового.Событие: отдаёт текст модели и возвращает итог того, что она сделала с календарём.
@@ -31,7 +30,7 @@ internal class QuickEventRunner(
             nextId = batch::nextId,
             ensurePermission = { hasCalendarPermission(app) },
             handler = batch::execute,
-            defaults = EventDefaults(today = LocalDate.now()),
+            defaults = EventDefaults(),
         )
         val config = ConversationConfig(
             systemInstruction = Contents.of(EventPrompts.systemInstruction(currentTimeForPrompt())),

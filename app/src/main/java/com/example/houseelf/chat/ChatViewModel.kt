@@ -9,6 +9,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.houseelf.calendar.CalendarTools
 import com.example.houseelf.calendar.EventAction
+import com.example.houseelf.calendar.EventDefaults
 import com.example.houseelf.calendar.EventProposal
 import com.example.houseelf.calendar.EventStatus
 import com.example.houseelf.calendar.applyCalendarAction
@@ -67,12 +68,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile private var permissionWaiter: CompletableFuture<Boolean>? = null // инструмент ждёт ответа на запрос
     private val isolatedRunLock = Mutex() // идёт фоновая задача в отдельном разговоре (Домовой.Событие)
 
+    // Значения по умолчанию — те же, что в Домовом.Событие: модель не переспрашивает, а вносит событие сразу
+    private val eventDefaults = EventDefaults()
+
     // Инструменты, доступные модели. Вызываются из потока генерации.
     private val calendarTools = CalendarTools(
         context = app.applicationContext,
         nextId = { nextEventId.incrementAndGet() },
         ensurePermission = { awaitCalendarPermission() },
         handler = { handleProposal(it) },
+        defaults = eventDefaults,
     )
 
     init {
@@ -340,10 +345,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Дату и время берём в момент создания диалога — поэтому «завтра» модель понимает правильно. */
-    private fun conversationConfig() = ConversationConfig(
-        systemInstruction = Contents.of(Prompts.systemInstruction(currentTimeForPrompt())),
-        tools = listOf(tool(calendarTools)),
-    )
+    private fun conversationConfig(): ConversationConfig {
+        eventDefaults.reset()
+        return ConversationConfig(
+            systemInstruction = Contents.of(Prompts.systemInstruction(currentTimeForPrompt())),
+            tools = listOf(tool(calendarTools)),
+        )
+    }
 
     private fun closeEngine() {
         generateJob?.cancel()
@@ -543,26 +551,26 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             addEvent(ev.copy(status = EventStatus.Pending))
             return true to when (ev.action) {
                 EventAction.Add -> "The event is shown to the user as a card with Add and Reject buttons. " +
-                    "It is NOT in the calendar yet. Briefly say what you prepared and ask the user to confirm with the button."
+                    "It is NOT in the calendar yet. $CONTINUE_OR_REPORT Then ask the user to confirm with the button."
                 EventAction.Update -> "The change is shown to the user as a card with Change and Reject buttons. " +
-                    "The event is NOT changed yet. Briefly say what you want to change and ask the user to confirm with the button."
+                    "The event is NOT changed yet. $CONTINUE_OR_REPORT Then ask the user to confirm with the button."
                 EventAction.Delete -> "The deletion is shown to the user as a card with Delete and Keep buttons. " +
-                    "The event is NOT deleted yet. Briefly say which event you want to delete and ask the user to confirm with the button."
+                    "The event is NOT deleted yet. $CONTINUE_OR_REPORT Then ask the user to confirm with the button."
             }
         }
         if (!hasCalendarPermission(app)) {
             addEvent(ev.copy(status = EventStatus.NeedsPermission))
             requestCalendarPermission()
             return true to "The user is being asked to allow calendar access; the action will be done " +
-                "automatically as soon as they allow it. Briefly say that you are doing it."
+                "automatically as soon as they allow it. $CONTINUE_OR_REPORT"
         }
         return try {
             val calendarEventId = applyCalendarAction(app, ev)
             addEvent(ev.copy(status = EventStatus.Added, calendarEventId = calendarEventId))
             true to when (ev.action) {
-                EventAction.Add -> "The event '${ev.title}' has been added to the user's calendar. Briefly confirm this."
-                EventAction.Update -> "The event '${ev.title}' has been changed in the user's calendar. Briefly confirm what changed."
-                EventAction.Delete -> "The event '${ev.title}' has been deleted from the user's calendar. Briefly confirm this."
+                EventAction.Add -> "The event '${ev.title}' has been added to the user's calendar. $CONTINUE_OR_REPORT"
+                EventAction.Update -> "The event '${ev.title}' has been changed in the user's calendar. $CONTINUE_OR_REPORT"
+                EventAction.Delete -> "The event '${ev.title}' has been deleted from the user's calendar. $CONTINUE_OR_REPORT"
             }
         } catch (t: Throwable) {
             val reason = t.message ?: t.javaClass.simpleName
@@ -572,7 +580,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 EventAction.Update -> "change the event"
                 EventAction.Delete -> "delete the event"
             }
-            false to "Could not $what: $reason. Tell the user it failed."
+            false to "Could not $what: $reason. $CONTINUE_OR_REPORT Mention that this one failed."
         }
     }
 
@@ -761,6 +769,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         const val MAX_CAPTURE_CHARS = 5_000
 
         private const val PERMISSION_WAIT_SECONDS = 120L
+
+        /**
+         * Хвост каждого ответа инструмента. В сообщении может быть несколько событий: модель не должна
+         * останавливаться после первого и не должна переспрашивать — как в Домовом.Событие.
+         */
+        private const val CONTINUE_OR_REPORT = "If the user's message has more events that are not handled yet, " +
+            "call the tool for the next one right now, without asking anything. " +
+            "When all are handled, briefly tell the user in one or two sentences what was done."
 
         /** Сколько фоновая задача ждёт загрузку модели или конец ответа в чате. */
         private const val MODEL_WAIT_MS = 120_000L
