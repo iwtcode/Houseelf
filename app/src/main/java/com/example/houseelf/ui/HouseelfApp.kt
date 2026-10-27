@@ -51,6 +51,9 @@ import com.example.houseelf.library.NetworkChoiceDialog
 import com.example.houseelf.model.CatalogModel
 import com.example.houseelf.library.ProgressScreen
 import com.example.houseelf.model.modelDisplayName
+import com.example.houseelf.today.TaskChange
+import com.example.houseelf.today.TaskEditorHost
+import com.example.houseelf.today.TaskRequest
 import com.example.houseelf.today.TodayScreen
 import com.example.houseelf.ui.screens.ErrorScreen
 import com.example.houseelf.ui.screens.LoadingScreen
@@ -99,6 +102,8 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel(), 
     LaunchedEffect(openChatTick) { if (openChatTick > 0) showToday = false }
     // Меняется, когда пользователь ответил на запрос календаря на экране «Сегодня»
     var calendarTick by remember { mutableIntStateOf(0) }
+    // Ручное добавление, изменение или удаление дела: окно открывается и с «Сегодня», и из карточки в чате
+    var taskRequest by remember { mutableStateOf<TaskRequest?>(null) }
 
     // Какой из «своих» экранов виден сейчас (null — идёт загрузка, прогресс или ошибка)
     val destination: Dest? = when (state.phase) {
@@ -181,6 +186,8 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel(), 
         onDismiss = vm::dismissEvent,
         onOpenForm = { ev -> openIntent(calendarInsertIntent(ev)) },
         onView = { id -> openIntent(calendarViewIntent(id)) },
+        onEdit = { id -> taskRequest = TaskRequest.Edit(id) },
+        onDeleteEvent = { id -> taskRequest = TaskRequest.Delete(id) },
     )
 
     val messageActions = MessageActions(
@@ -269,6 +276,9 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel(), 
                 onOpenChat = { showToday = false },
                 onOpenLibrary = vm::openLibrary,
                 onOpenEvent = { id -> openIntent(calendarViewIntent(id)) },
+                onAddTask = { taskRequest = TaskRequest.Create() },
+                onEditTask = { id -> taskRequest = TaskRequest.Edit(id) },
+                onDeleteTask = { id -> taskRequest = TaskRequest.Delete(id) },
             )
             AppScreen.Chat -> ChatScreen(
                 state = state,
@@ -290,6 +300,19 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel(), 
             )
         }
     }
+
+    TaskEditorHost(
+        request = taskRequest,
+        onClose = { taskRequest = null },
+        onChanged = { change ->
+            calendarTick++ // «Сегодня» перечитает календарь
+            when (change) {
+                is TaskChange.Updated -> vm.onCalendarEventEdited(change.event)
+                is TaskChange.Deleted -> vm.onCalendarEventDeleted(change.eventId)
+                is TaskChange.Created -> Unit
+            }
+        },
+    )
 
     if (state.askNetworkChoice) {
         NetworkChoiceDialog(

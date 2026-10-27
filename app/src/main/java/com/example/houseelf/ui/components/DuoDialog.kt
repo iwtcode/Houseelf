@@ -35,7 +35,7 @@ internal fun DuoDialog(
 }
 
 @Composable
-private fun DialogAction(text: String, color: Color, onClick: () -> Unit) {
+internal fun DialogAction(text: String, color: Color, onClick: () -> Unit) {
     TextButton(onClick = onClick) {
         Text(text.uppercase(), color = color, fontSize = 14.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = 0.6.sp)
     }

@@ -10,4 +10,8 @@ class EventActions(
     val onOpenForm: (EventProposal) -> Unit,
     /** Открыть уже созданное событие. */
     val onView: (Long) -> Unit,
+    /** Изменить вручную уже созданное событие. Если null — кнопки «Изменить» и «Удалить» не показываем. */
+    val onEdit: ((Long) -> Unit)? = null,
+    /** Удалить вручную уже созданное событие. */
+    val onDeleteEvent: ((Long) -> Unit)? = null,
 )

@@ -24,6 +24,13 @@ class ProgressStore(context: Context) {
         prefs.edit().putStringSet("started", startedKeys() + key).apply()
     }
 
+    /** Дела, которые пользователь сам открыл вне очереди (нажал «Открыть?»). */
+    fun openedKeys(): Set<String> = HashSet(prefs.getStringSet("opened", emptySet()) ?: emptySet())
+
+    fun open(key: String) {
+        prefs.edit().putStringSet("opened", openedKeys() + key).apply()
+    }
+
     /** Сколько шагов каждого дела уже пройдено. */
     fun stepsDone(): Map<String, Int> = prefs.all
         .filterKeys { it.startsWith(STEP_PREFIX) }
@@ -46,6 +53,7 @@ class ProgressStore(context: Context) {
         prefs.edit()
             .putStringSet("done", done)
             .putStringSet("started", startedKeys().withoutStale(today))
+            .putStringSet("opened", (openedKeys() - key).withoutStale(today))
             .remove(STEP_PREFIX + key)
             .putInt("xp", xp + XP_PER_TASK)
             .putInt("streak", streak)

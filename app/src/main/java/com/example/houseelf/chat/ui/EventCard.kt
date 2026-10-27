@@ -31,6 +31,7 @@ import com.example.houseelf.calendar.EventStatus
 import com.example.houseelf.calendar.formatEventWhen
 import com.example.houseelf.ui.components.DuoButton
 import com.example.houseelf.ui.components.DuoCard
+import com.example.houseelf.ui.components.DuoIconButton
 import com.example.houseelf.ui.components.DuoKind
 import com.example.houseelf.ui.components.IconBadge
 import com.example.houseelf.ui.icons.DuoIcons
@@ -168,15 +169,17 @@ internal fun EventCard(ev: EventProposal, actions: EventActions, modifier: Modif
                         style = MaterialTheme.typography.labelLarge.copy(fontSize = 14.sp),
                         color = Duo.TealDark,
                     )
-                    // Удалённое событие открывать уже нечем
-                    if (ev.calendarEventId != null && !delete) {
-                        DuoButton(
-                            "Открыть",
-                            { actions.onView(ev.calendarEventId) },
-                            Modifier.width(112.dp),
-                            kind = DuoKind.Outline,
-                            height = 40.dp,
-                        )
+                    // Удалённое событие открывать, менять и удалять уже нечем
+                    val id = ev.calendarEventId
+                    if (id != null && !delete) {
+                        DuoIconButton(DuoIcons.External, "Открыть в календаре", { actions.onView(id) }, side = 40.dp)
+                        // Человек может сам поправить или убрать дело, не прося об этом модель
+                        actions.onEdit?.let { onEdit ->
+                            DuoIconButton(DuoIcons.Pencil, "Изменить", { onEdit(id) }, side = 40.dp)
+                        }
+                        actions.onDeleteEvent?.let { onDeleteEvent ->
+                            DuoIconButton(DuoIcons.Trash, "Удалить", { onDeleteEvent(id) }, tint = Duo.Red, side = 40.dp)
+                        }
                     }
                 }
                 EventStatus.Failed -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {

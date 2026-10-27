@@ -10,6 +10,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.houseelf.calendar.CalendarTools
 import com.example.houseelf.calendar.EventAction
 import com.example.houseelf.calendar.EventDefaults
+import com.example.houseelf.calendar.CalendarEventInfo
 import com.example.houseelf.calendar.EventProposal
 import com.example.houseelf.calendar.EventStatus
 import com.example.houseelf.calendar.applyCalendarAction
@@ -786,6 +787,36 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             s.copy(messages = s.messages.map { m ->
                 if (m.events.any { it.id == id }) m.copy(events = m.events.map { if (it.id == id) change(it) else it })
                 else m
+            })
+        }
+    }
+
+    /** Человек сам изменил дело в календаре (из чата или с экрана «Сегодня»): карточки в чате показывают новые данные. */
+    fun onCalendarEventEdited(info: CalendarEventInfo) {
+        _state.update { s ->
+            s.copy(messages = s.messages.map { m ->
+                if (m.events.none { it.calendarEventId == info.id }) m
+                else m.copy(events = m.events.map { ev ->
+                    if (ev.calendarEventId != info.id || ev.action == EventAction.Delete) ev
+                    else ev.copy(
+                        title = info.title, start = info.start, end = info.end, allDay = info.allDay,
+                        location = info.location, description = info.description, recurring = info.recurring,
+                    )
+                })
+            })
+        }
+    }
+
+    /** Человек сам удалил дело: карточки в чате показывают, что события в календаре больше нет. */
+    fun onCalendarEventDeleted(eventId: Long) {
+        _state.update { s ->
+            s.copy(messages = s.messages.map { m ->
+                if (m.events.none { it.calendarEventId == eventId }) m
+                else m.copy(events = m.events.map { ev ->
+                    if (ev.calendarEventId == eventId && ev.status == EventStatus.Added && ev.action != EventAction.Delete) {
+                        ev.copy(action = EventAction.Delete)
+                    } else ev
+                })
             })
         }
     }

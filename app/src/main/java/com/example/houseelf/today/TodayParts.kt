@@ -1,5 +1,6 @@
 package com.example.houseelf.today
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -7,6 +8,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -38,6 +40,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.houseelf.ui.components.DuoButton
+import com.example.houseelf.ui.components.DuoIconButton
+import com.example.houseelf.ui.components.DuoKind
 import com.example.houseelf.ui.icons.DuoIcons
 import com.example.houseelf.ui.theme.Duo
 import java.time.LocalDate
@@ -61,6 +65,10 @@ internal class TaskActions(
     val onNextStep: () -> Unit,
     val onDone: () -> Unit,
     val onOpen: () -> Unit,
+    /** Открыть дело вне очереди (кнопка «Открыть?» у закрытого дела). */
+    val onUnlock: () -> Unit,
+    val onEdit: () -> Unit,
+    val onDelete: () -> Unit,
 )
 
 @Composable
@@ -74,6 +82,10 @@ internal fun PathItem(
 ) {
     val now = LocalDateTime.now()
     val overdue = state == NodeState.Active && !task.allDay && task.end.isBefore(now)
+    // Кнопки дела прячутся: показываем их, только когда человек нажал на кружок (или название) дела
+    var selected by remember { mutableStateOf(false) }
+    val locked = state == NodeState.Locked
+    val toggleSelected = { selected = !selected }
 
     Row(
         Modifier
@@ -83,13 +95,27 @@ internal fun PathItem(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        when (state) {
-            NodeState.Done -> PathNode(DuoIcons.Check, Duo.Teal, Duo.TealDark, Color.White, ring = false)
-            NodeState.Active -> PathNode(DuoIcons.Calendar, Duo.Amber, Duo.AmberDark, Duo.Ink, ring = true)
-            NodeState.Locked -> PathNode(DuoIcons.Lock, Duo.Track, Duo.Line, Duo.Muted, ring = false)
+        Box(
+            Modifier.clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = toggleSelected,
+            ),
+        ) {
+            when (state) {
+                NodeState.Done -> PathNode(DuoIcons.Check, Duo.Teal, Duo.TealDark, Color.White, ring = false)
+                NodeState.Active -> PathNode(DuoIcons.Calendar, Duo.Amber, Duo.AmberDark, Duo.Ink, ring = true)
+                NodeState.Locked -> PathNode(DuoIcons.Lock, Duo.Track, Duo.Line, Duo.Muted, ring = false)
+            }
         }
         Column(Modifier.weight(1f)) {
-            Column(Modifier.clickable(onClick = actions.onOpen)) {
+            Column(
+                Modifier.clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = toggleSelected,
+                ),
+            ) {
                 Text(
                     task.title,
                     style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp),
@@ -117,7 +143,31 @@ internal fun PathItem(
                 Spacer(Modifier.height(8.dp))
                 ActiveTaskControls(task, started, stepsDone, actions)
             }
+            AnimatedVisibility(visible = selected) {
+                TaskToolbar(locked, actions)
+            }
         }
+    }
+}
+
+/**
+ * Панель выбранного дела: у закрытого — «Открыть?» вне очереди; у всех — иконки «В календаре», «Изменить», «Удалить».
+ */
+@Composable
+private fun TaskToolbar(locked: Boolean, actions: TaskActions) {
+    Row(
+        Modifier.fillMaxWidth().padding(top = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        if (locked) {
+            DuoButton("Открыть?", actions.onUnlock, Modifier.weight(1f), kind = DuoKind.Amber, height = 44.dp)
+        } else {
+            Spacer(Modifier.weight(1f))
+        }
+        DuoIconButton(DuoIcons.External, "Открыть в календаре", actions.onOpen)
+        DuoIconButton(DuoIcons.Pencil, "Изменить", actions.onEdit)
+        DuoIconButton(DuoIcons.Trash, "Удалить", actions.onDelete, tint = Duo.Red)
     }
 }
 

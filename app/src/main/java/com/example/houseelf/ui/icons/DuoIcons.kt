@@ -94,5 +94,6 @@ object DuoIcons {
         "M11 9h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-9a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z",
         "M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1",
     )
+    val Pencil = icon("pencil", "M4 20l1-5L16 4l4 4L9 19z", "M13.5 6.5l4 4")
     val Refresh = icon("refresh", "M22 4v6h-6", "M20 15a9 9 0 1 1-2.1-9.4L22 10")
 }
