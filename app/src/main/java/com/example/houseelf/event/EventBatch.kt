@@ -4,6 +4,7 @@ import android.content.Context
 import com.example.houseelf.calendar.EventAction
 import com.example.houseelf.calendar.EventProposal
 import com.example.houseelf.calendar.applyCalendarAction
+import com.example.houseelf.calendar.formatEventWhen
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicLong
 
@@ -58,7 +59,7 @@ internal class EventBatch(private val context: Context) {
             EventAction.Update -> "changed in"
             EventAction.Delete -> "deleted from"
         }
-        return "The event '${event.title}' has been $done the calendar. $CONTINUE"
+        return "The event '${event.title}' has been $done the calendar (${formatEventWhen(event)}). $CONTINUE"
     }
 
     private fun verb(action: EventAction): String = when (action) {

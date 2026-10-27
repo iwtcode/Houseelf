@@ -13,6 +13,7 @@ internal object EventPrompts {
             "Новое событие вноси инструментом добавления. Если в тексте нет названия, даты или времени, " +
             "просто не передавай этот аргумент: недостающее подставится само. Ничего не выдумывай. " +
             TaskPromptRules.NAMING +
+            TaskPromptRules.DATES +
             TaskPromptRules.STEPS +
             TaskPromptRules.EDIT +
             TaskPromptRules.SKIP_AMBIGUOUS +

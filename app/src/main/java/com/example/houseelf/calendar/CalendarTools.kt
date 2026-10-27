@@ -7,13 +7,15 @@ import com.example.houseelf.today.stepsFromNotes
 import com.google.ai.edge.litertlm.Tool
 import com.google.ai.edge.litertlm.ToolParam
 import com.google.ai.edge.litertlm.ToolSet
+import java.time.DayOfWeek
 import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalDateTime
-import java.time.OffsetDateTime
+import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
 import java.time.temporal.ChronoUnit
+import java.time.temporal.TemporalAdjusters
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
@@ -32,6 +34,9 @@ import java.util.concurrent.ConcurrentHashMap
  * [handler] делает всю работу (запись или показ карточки) и возвращает ответ для модели:
  * успех или нет + текст, по которому она сообщит пользователю результат.
  * [ensurePermission] при необходимости просит у пользователя доступ к календарю и ждёт ответа.
+ *
+ * Даты и время модель НЕ считает: она передаёт слова пользователя («завтра», «в субботу», «через неделю», «6 вечера»),
+ * а в дату и время их превращает [NaturalDateTime]. Маленькая модель путает дни недели и прибавляет не те дни.
  *
  * [defaults] — что делать, если у нового события нет названия или даты. null (чат): вернуть модели ошибку,
  * и она переспросит пользователя. Не null (Домовой.Событие, спросить некого): подставить значения по умолчанию.
@@ -52,37 +57,61 @@ class CalendarTools(
 
     private val subtasks = SubtaskStore(context)
 
+    /**
+     * Фразы про дату или время, которые мы уже вернули модели как нечитаемые. Первый раз просим её передать их иначе,
+     * второй раз с той же фразой — не зацикливаемся и подставляем значение по умолчанию.
+     */
+    private val rejectedPhrases: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
     @Tool(
         description = "Adds an event to the user's calendar. Call it whenever the user asks to add, " +
             "schedule, book or remind about a meeting, appointment, event, task or deadline. " +
+            "Never calculate dates yourself: copy the day and the time from the user's words, the app converts them. " +
             "Always put the details of the task (what to buy, take, prepare or do) into notes. " +
-            "Report the outcome to the user exactly as the tool result says."
+            "Report the outcome to the user exactly as the tool result says, with the date and time it names."
     )
     fun addCalendarEvent(
         @ToolParam(description = "Very short title, 1-3 words, in the user's language, without date, time or details, e.g. 'Поход в магазин'. Omit if the text gives no title") title: String? = null,
         @ToolParam(description = "The task description: everything the user said about what to do, buy, take or prepare, e.g. 'купить молоко, хлеб, яйца и сыр'. Fill it whenever the message has any such details. Leave empty only if there are none") notes: String? = null,
-        @ToolParam(description = "Start date and time in ISO 8601 local time without time zone, e.g. 2026-10-25T15:00. For an all-day event use only the date, e.g. 2026-10-25. Omit if the text gives no date") start: String? = null,
-        @ToolParam(description = "End date and time in the same format. Omit if the user did not say when it ends") end: String? = null,
+        @ToolParam(description = "The day exactly as the user said it, in their own words, NOT converted to a number: 'сегодня', 'завтра', 'послезавтра', 'в субботу', 'в следующий вторник', 'через неделю', 'через 3 дня', '25 октября'. Do not calculate or guess the date. Omit if the user named no day") date: String? = null,
+        @ToolParam(description = "The time of day as the user said it: '18:00', '12 часов', '6 вечера', 'половина седьмого', 'через 2 часа'. Do not change it. Omit if the user named no time") time: String? = null,
+        @ToolParam(description = "When the event ends, as the user said it: '19:00', '8 вечера'. Omit if the user did not say when it ends") endTime: String? = null,
+        @ToolParam(description = "Last day of a multi-day event, as the user said it: 'в пятницу', '7 ноября'. Omit for a one-day event") endDate: String? = null,
         @ToolParam(description = "Place of the event, if mentioned") location: String? = null,
-        @ToolParam(description = "true if the event lasts all day or the user gave no time, otherwise false") allDay: Boolean = false,
+        @ToolParam(description = "true only if the user said the event lasts all day. Leave false otherwise; ignored when a time is given") allDay: Boolean = false,
     ): Map<String, Any> {
         return try {
             // Если модель сложила детали в название («Поход в магазин: купить молоко») и пропустила notes — разделяем сами
             val (cleanTitle, cleanNotes) = separateNotes(title, notes)
             val name = resolveTitle(cleanTitle)
                 ?: return fail("The title is empty. Ask the user what the event is called.")
-            val (startValue, startHasTime) = resolveStart(start)
-                ?: return fail(startProblem(start))
-            val isAllDay = allDay || !startHasTime
 
-            val endValue = end?.takeIf { it.isNotBlank() }?.let { parseDateTime(it)?.first }
-            val (from, to) = if (isAllDay) {
-                val firstDay = startValue.toLocalDate()
-                val lastDay = endValue?.toLocalDate()?.takeIf { !it.isBefore(firstDay) } ?: firstDay
-                firstDay.atStartOfDay() to lastDay.atStartOfDay()
+            val now = LocalDateTime.now()
+            val parsed = NaturalDateTime.resolve(date, time, now)
+            if (!date.isNullOrBlank() && parsed.dateProblem && rejectedPhrases.add("date:${date.trim()}")) {
+                return fail(dateProblem(date))
+            }
+            if (!time.isNullOrBlank() && parsed.timeProblem && rejectedPhrases.add("time:${time.trim()}")) {
+                return fail(timeProblem(time))
+            }
+
+            // Есть время, а дня нет («напомни в 8:00»): если это время сегодня уже прошло — значит, завтра
+            val startDay: LocalDate = parsed.date
+                ?: parsed.time?.let { t -> if (t.isBefore(now.toLocalTime())) now.toLocalDate().plusDays(1) else now.toLocalDate() }
+                ?: defaults?.start()?.toLocalDate()
+                ?: return fail("The date is missing. Ask the user when the event takes place.")
+            // Время названо — событие по часам, даже если модель зачем-то поставила allDay; времени нет — на весь день
+            val startTime: LocalTime? = parsed.time
+            val isAllDay = startTime == null
+
+            val end = NaturalDateTime.resolve(endDate, endTime, now)
+            val (from, to) = if (startTime == null) {
+                val lastDay = end.date?.takeIf { !it.isBefore(startDay) } ?: startDay
+                startDay.atStartOfDay() to lastDay.atStartOfDay()
             } else {
-                val finish = if (endValue != null && endValue.isAfter(startValue)) endValue else startValue.plusHours(1)
-                startValue to finish
+                val begin = startDay.atTime(startTime)
+                val finish = finishOf(begin, end)
+                begin to (if (finish != null && finish.isAfter(begin)) finish else begin.plusHours(1))
             }
 
             val (ok, message) = handler(
@@ -105,28 +134,33 @@ class CalendarTools(
     @Tool(
         description = "Reads the user's calendar and returns the events of a period. Call it whenever the user asks " +
             "what is planned or scheduled (today, tomorrow, this week, this month or on a given date), " +
-            "whether a day is free. Tell the user only what the result says; never invent events."
+            "whether a day is free. Never calculate dates yourself. Tell the user only what the result says; never invent events."
     )
     fun listCalendarEvents(
-        @ToolParam(description = "One of: today, tomorrow, week (the next 7 days starting today), month (the next 30 days starting today). For any other period leave it as today and set from and to") period: String = "today",
-        @ToolParam(description = "First day of another period, e.g. 2026-10-25. Leave empty for today, tomorrow, week and month") from: String? = null,
-        @ToolParam(description = "Last day of that period, inclusive, e.g. 2026-10-31. Omit for a single day") to: String? = null,
+        @ToolParam(description = "One of: today, tomorrow, week (the next 7 days starting today), next_week (Monday to Sunday of next week), weekend (the coming Saturday and Sunday), month (the next 30 days starting today). A single day can also be given in the user's own words: 'в субботу', 'послезавтра', 'через неделю', '25 октября'") period: String = "today",
+        @ToolParam(description = "First day of another period, in the user's own words ('в пятницу', '5 ноября'). Leave empty when period is enough") from: String? = null,
+        @ToolParam(description = "Last day of that period, inclusive, in the user's own words. Omit for a single day") to: String? = null,
     ): Map<String, Any> {
         return try {
             val today = LocalDate.now()
             val fromRaw = from?.trim()?.takeIf { it.isNotEmpty() }
             val (first, requestedLast) = if (fromRaw != null) {
-                val a = readDay(fromRaw) ?: return fail("Could not read the date '$fromRaw'. Use the format 2026-10-25.")
+                val a = readDay(fromRaw) ?: return fail("Could not read the date '$fromRaw'. Pass the day in the user's own words, e.g. 'в пятницу' or '5 ноября'.")
                 val toRaw = to?.trim()?.takeIf { it.isNotEmpty() }
                 val b = if (toRaw == null) a else readDay(toRaw)
-                    ?: return fail("Could not read the date '$toRaw'. Use the format 2026-10-31.")
+                    ?: return fail("Could not read the date '$toRaw'. Pass the day in the user's own words, e.g. 'в воскресенье' or '8 ноября'.")
                 Pair(a, b)
-            } else when (period.trim().lowercase(Locale.ROOT)) {
+            } else when (val key = period.trim().lowercase(Locale.ROOT).replace(' ', '_')) {
                 "today" -> Pair(today, today)
                 "tomorrow" -> Pair(today.plusDays(1), today.plusDays(1))
                 "week" -> Pair(today, today.plusDays(6))
+                "next_week" -> today.with(DayOfWeek.MONDAY).plusWeeks(1).let { Pair(it, it.plusDays(6)) }
+                "weekend" -> if (today.dayOfWeek == DayOfWeek.SUNDAY) Pair(today, today)
+                    else today.with(TemporalAdjusters.nextOrSame(DayOfWeek.SATURDAY)).let { Pair(it, it.plusDays(1)) }
                 "month" -> Pair(today, today.plusDays(29))
-                else -> return fail("Unknown period '$period'. Use today, tomorrow, week or month, or set from and to.")
+                // Один день словами пользователя: «в субботу», «послезавтра»
+                else -> NaturalDateTime.parseDate(key.replace('_', ' '), today)?.let { Pair(it, it) }
+                    ?: return fail("Unknown period '$period'. Use today, tomorrow, week, next_week, weekend or month, or name the day in the user's own words.")
             }
             var last = if (requestedLast.isBefore(first)) first else requestedLast
             var clipped = false
@@ -167,8 +201,9 @@ class CalendarTools(
     fun updateCalendarEvent(
         @ToolParam(description = "Current title of the event to change, as the user names it, e.g. 'Поход в магазин'") eventTitle: String? = null,
         @ToolParam(description = "New title. Omit to keep the current one") title: String? = null,
-        @ToolParam(description = "New start in ISO 8601 local time, e.g. 2026-10-25T15:00. A date only (2026-10-25) moves a timed event to that day and keeps its time. Omit to keep the current start") start: String? = null,
-        @ToolParam(description = "New end in the same format. Omit to keep the current length of the event") end: String? = null,
+        @ToolParam(description = "New day exactly as the user said it, in their own words, NOT converted to a number: 'завтра', 'в субботу', 'в следующий вторник', 'через неделю', '25 октября'. Do not calculate the date. A day alone moves a timed event to that day and keeps its time. Omit to keep the current day") date: String? = null,
+        @ToolParam(description = "New time of day as the user said it: '18:00', '6 вечера', 'половина седьмого'. A time alone keeps the day. Omit to keep the current time") time: String? = null,
+        @ToolParam(description = "New end time as the user said it. Omit to keep the current length of the event") endTime: String? = null,
         @ToolParam(description = "New place. Omit to keep the current one") location: String? = null,
         @ToolParam(description = "New task description (notes). Omit to keep the current one") notes: String? = null,
         @ToolParam(description = "Optional: the event id from listCalendarEvents, digits only. Not needed when eventTitle is given") eventId: String? = null,
@@ -185,19 +220,30 @@ class CalendarTools(
             val newLocation = location?.trim()?.takeIf { it.isNotEmpty() } ?: cur.location
             val newDescription = notes?.trim()?.takeIf { it.isNotEmpty() } ?: cur.description
 
-            val startRaw = start?.trim()?.takeIf { it.isNotEmpty() }
-            val endRaw = end?.trim()?.takeIf { it.isNotEmpty() }
+            val dateRaw = date?.trim()?.takeIf { it.isNotEmpty() }
+            val timeRaw = time?.trim()?.takeIf { it.isNotEmpty() }
+            val endTimeRaw = endTime?.trim()?.takeIf { it.isNotEmpty() }
             var allDay = cur.allDay
             var newStart = cur.start
             var newEnd = cur.end
 
-            if (startRaw != null || endRaw != null) {
+            if (dateRaw != null || timeRaw != null || endTimeRaw != null) {
                 if (cur.recurring) {
                     return fail("'${cur.title}' is a recurring event: its time cannot be changed here, only the title, place and notes. " +
                         "Tell the user to change the time in the calendar app.")
                 }
-                val s = startRaw?.let { parseDateTime(it) ?: return fail("Could not read the start '$it'. Use the format 2026-10-25T15:00.") }
-                val e = endRaw?.let { parseDateTime(it) ?: return fail("Could not read the end '$it'. Use the format 2026-10-25T16:00.") }
+                val now = LocalDateTime.now()
+                val w = NaturalDateTime.resolve(dateRaw, timeRaw, now)
+                if (dateRaw != null && w.dateProblem) return fail(dateProblem(dateRaw))
+                if (timeRaw != null && w.timeProblem) return fail(timeProblem(timeRaw))
+                // Только время — день остаётся прежним; только день — остаётся время (см. ниже)
+                val s: Pair<LocalDateTime, Boolean>? = if (w.date != null || w.time != null) {
+                    val day = w.date ?: cur.start.toLocalDate()
+                    day.atTime(w.time ?: LocalTime.MIDNIGHT) to (w.time != null)
+                } else null
+                val e: Pair<LocalDateTime, Boolean>? = NaturalDateTime.resolve(null, endTimeRaw, now).time?.let { t ->
+                    (s?.first?.toLocalDate() ?: cur.start.toLocalDate()).atTime(t) to true
+                }
                 if (s != null) {
                     val (startValue, hasTime) = s
                     val keepTimeOfDay = !hasTime && !cur.allDay
@@ -393,14 +439,26 @@ class CalendarTools(
     private fun resolveTitle(raw: String?): String? =
         raw?.trim()?.takeIf { it.isNotEmpty() } ?: defaults?.nextTitle()
 
-    /** Начало из запроса модели, а если его нет или оно не читается — начало по умолчанию (только когда оно разрешено). */
-    private fun resolveStart(raw: String?): Pair<LocalDateTime, Boolean>? =
-        raw?.takeIf { it.isNotBlank() }?.let { parseDateTime(it) } ?: defaults?.let { it.start() to false }
+    /** Конец события: время «до 19:00» (если оно раньше начала — это следующая половина суток или следующий день). */
+    private fun finishOf(begin: LocalDateTime, end: ParsedWhen): LocalDateTime? {
+        val t = end.time
+        if (t == null) return end.date?.atTime(begin.toLocalTime()) // «до пятницы» без часа: то же время в тот день
+        var finish = (end.date ?: begin.toLocalDate()).atTime(t)
+        if (end.date == null && !finish.isAfter(begin)) {
+            // «с 14 до 6» — это до 18:00; «с 22 до 2» — это до 2 часов ночи следующего дня
+            val evening = finish.plusHours(12)
+            finish = if (t.hour <= 12 && evening.isAfter(begin) && evening.toLocalDate() == begin.toLocalDate()) evening else finish.plusDays(1)
+        }
+        return finish
+    }
 
-    /** Почему начало не удалось определить: модель либо не передала его, либо передала нечитаемое. */
-    private fun startProblem(raw: String?): String =
-        if (raw.isNullOrBlank()) "The start is missing. Ask the user when the event takes place."
-        else "Could not read the start '$raw'. Use the format 2026-10-25T15:00 or 2026-10-25."
+    private fun dateProblem(raw: String?): String =
+        "Could not understand the date '${raw?.trim()}'. Call the tool again and pass the day exactly in the user's own words " +
+            "(for example 'завтра', 'в субботу', 'через неделю', '25 октября'), or omit it if the user named no day."
+
+    private fun timeProblem(raw: String?): String =
+        "Could not understand the time '${raw?.trim()}'. Call the tool again and pass the time exactly in the user's own words " +
+            "(for example '18:00', '12 часов', '6 вечера'), or omit it if the user named no time."
 
     /** Название для сравнения: строчные буквы, «ё» как «е», без знаков препинания и лишних пробелов. */
     private fun normalizeTitle(raw: String): String = raw.lowercase(Locale.ROOT)
@@ -428,7 +486,7 @@ class CalendarTools(
         return common >= MIN_WORD && common >= n - 2
     }
 
-    private fun readDay(raw: String): LocalDate? = parseDateTime(raw)?.first?.toLocalDate()
+    private fun readDay(raw: String): LocalDate? = NaturalDateTime.parseDate(raw, LocalDate.now())
 
     /** Достаёт число из «123», «id=123» или «[id=123]». */
     private fun parseEventId(raw: String): Long? = Regex("\\d+").find(raw)?.value?.toLongOrNull()
@@ -467,13 +525,4 @@ class CalendarTools(
     }
 
     private fun fail(message: String): Map<String, Any> = mapOf("status" to "error", "message" to message)
-
-    /** Возвращает дату-время и признак «время было указано». */
-    private fun parseDateTime(raw: String): Pair<LocalDateTime, Boolean>? {
-        val s = raw.trim().replace(' ', 'T')
-        try { return LocalDateTime.parse(s) to true } catch (_: Exception) {}
-        try { return OffsetDateTime.parse(s).toLocalDateTime() to true } catch (_: Exception) {}
-        try { return LocalDate.parse(s).atStartOfDay() to false } catch (_: Exception) {}
-        return null
-    }
 }

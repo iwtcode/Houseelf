@@ -14,6 +14,7 @@ import com.example.houseelf.calendar.EventProposal
 import com.example.houseelf.calendar.EventStatus
 import com.example.houseelf.calendar.applyCalendarAction
 import com.example.houseelf.calendar.currentTimeForPrompt
+import com.example.houseelf.calendar.formatEventWhen
 import com.example.houseelf.calendar.hasCalendarPermission
 import com.example.houseelf.media.Attachment
 import com.example.houseelf.media.AudioAttachment
@@ -733,9 +734,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (_state.value.confirmActions) {
             addEvent(ev.copy(status = EventStatus.Pending))
             return true to when (ev.action) {
-                EventAction.Add -> "The event is shown to the user as a card with Add and Reject buttons. " +
+                EventAction.Add -> "The event '${ev.title}' (${formatEventWhen(ev)}) is shown to the user as a card with Add and Reject buttons. " +
                     "It is NOT in the calendar yet. $CONTINUE_OR_REPORT Then ask the user to confirm with the button."
-                EventAction.Update -> "The change is shown to the user as a card with Change and Reject buttons. " +
+                EventAction.Update -> "The change of '${ev.title}' (now ${formatEventWhen(ev)}) is shown to the user as a card with Change and Reject buttons. " +
                     "The event is NOT changed yet. $CONTINUE_OR_REPORT Then ask the user to confirm with the button."
                 EventAction.Delete -> "The deletion is shown to the user as a card with Delete and Keep buttons. " +
                     "The event is NOT deleted yet. $CONTINUE_OR_REPORT Then ask the user to confirm with the button."
@@ -751,8 +752,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val calendarEventId = applyCalendarAction(app, ev)
             addEvent(ev.copy(status = EventStatus.Added, calendarEventId = calendarEventId))
             true to when (ev.action) {
-                EventAction.Add -> "The event '${ev.title}' has been added to the user's calendar. $CONTINUE_OR_REPORT"
-                EventAction.Update -> "The event '${ev.title}' has been changed in the user's calendar. $CONTINUE_OR_REPORT"
+                EventAction.Add -> "The event '${ev.title}' has been added to the user's calendar: ${formatEventWhen(ev)}. $CONTINUE_OR_REPORT"
+                EventAction.Update -> "The event '${ev.title}' has been changed in the user's calendar, now: ${formatEventWhen(ev)}. $CONTINUE_OR_REPORT"
                 EventAction.Delete -> "The event '${ev.title}' has been deleted from the user's calendar. $CONTINUE_OR_REPORT"
             }
         } catch (t: Throwable) {
