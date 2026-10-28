@@ -241,6 +241,9 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel(), 
                 totalRamBytes = state.totalRamBytes,
                 autoLoad = state.autoLoad,
                 confirmActions = state.confirmActions,
+                contextTokens = state.contextTokens,
+                loadedContextTokens = state.loadedContextTokens,
+                loadedContextSetting = state.loadedContextSetting,
                 chatHasMessages = state.messages.isNotEmpty(),
                 onSelect = { fileName ->
                     showToday = false
@@ -249,6 +252,11 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel(), 
                 onUnload = vm::unloadModel,
                 onAutoLoadChange = vm::setAutoLoad,
                 onConfirmActionsChange = vm::setConfirmActions,
+                onContextChange = vm::setContextTokens,
+                onReloadModel = {
+                    showToday = false
+                    vm.reloadModel()
+                },
                 onDelete = vm::deleteModel,
                 onDownload = onDownload,
                 onPickFile = { filePicker.launch(arrayOf("*/*")) },

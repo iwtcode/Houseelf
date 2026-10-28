@@ -54,7 +54,7 @@ import java.util.concurrent.atomic.AtomicLong
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private val storage = ModelStorage(app)
-    private val engineFactory = EngineFactory(storage, app.cacheDir.path) { ramInfo().second }
+    private val engineFactory = EngineFactory(storage, app.cacheDir.path) { ramInfo().first }
     private val voiceRecorder = VoiceRecorder()
 
     private val _state = MutableStateFlow(UiState())
@@ -94,7 +94,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         Media.clearAttachments(app) // файлы вложений от прошлого запуска больше не нужны
         val models = storage.listModels()
         val autoLoad = storage.autoLoadOnStart
-        _state.update { it.copy(autoLoad = autoLoad, confirmActions = storage.confirmActions, thinking = storage.thinkingMode) }
+        _state.update { it.copy(autoLoad = autoLoad, confirmActions = storage.confirmActions, thinking = storage.thinkingMode,
+            contextTokens = storage.contextTokens) }
         when {
             storage.hasPendingDownload() -> { // приложение перезапустили во время скачивания
                 storage.resumeDownloadIfNeeded()
@@ -142,7 +143,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 Media.clearAttachments(getApplication())
             }
             _state.update {
-                it.copy(activeModel = null, messages = emptyList(), backend = "",
+                it.copy(activeModel = null, messages = emptyList(), backend = "", loadedContextTokens = null, loadedContextSetting = null,
                     imagesSupported = false, audioSupported = false, maxImages = 0,
                     toolsSupported = false, draft = emptyList(), notice = null)
             }
@@ -153,6 +154,21 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun setAutoLoad(enabled: Boolean) {
         storage.autoLoadOnStart = enabled
         _state.update { it.copy(autoLoad = enabled) }
+    }
+
+    /** Запомнить размер контекста (0 — авто). Вступает в силу при следующей загрузке модели. */
+    fun setContextTokens(tokens: Int) {
+        val value = tokens.coerceAtLeast(0)
+        storage.contextTokens = value
+        _state.update { it.copy(contextTokens = value) }
+    }
+
+    /** Загрузить текущую модель заново — чтобы применить новый размер контекста. Переписка сохраняется. */
+    fun reloadModel() {
+        val s = _state.value
+        val model = s.activeModel ?: return
+        if (isBusy() || loadJob?.isActive == true) return
+        loadEngine(model, keep = s.messages)
     }
 
     /** Открыть список моделей. Загруженная модель и чат остаются в памяти. */
@@ -191,7 +207,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 if (wasActive) Media.clearAttachments(getApplication())
             }
             _state.update {
-                if (wasActive) it.copy(activeModel = null, messages = emptyList(), backend = "",
+                if (wasActive) it.copy(activeModel = null, messages = emptyList(), backend = "", loadedContextTokens = null, loadedContextSetting = null,
                     imagesSupported = false, audioSupported = false, maxImages = 0,
                     toolsSupported = false, draft = emptyList(), notice = null)
                 else it
@@ -339,6 +355,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
         loadJob = viewModelScope.launch {
             try {
+                val settingAtLoad = storage.contextTokens
                 val loaded = withContext(Dispatchers.Default) {
                     closeEngine() // освобождаем память от предыдущей модели
                     // Вложения сохранённой переписки нужны для «Повторить»
@@ -357,6 +374,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update {
                     it.copy(phase = Phase.Chat, messages = keep ?: emptyList(), backend = loaded.backend,
                         activeModel = fileName, loadingModel = null,
+                        loadedContextTokens = loaded.contextTokens,
+                        loadedContextSetting = settingAtLoad,
                         imagesSupported = loaded.vision, audioSupported = loaded.audio,
                         maxImages = if (loaded.vision) activeProfile.maxImages else 0,
                         toolsSupported = activeProfile.tools,

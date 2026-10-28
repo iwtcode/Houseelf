@@ -96,3 +96,34 @@ fun DuoProgressBar(progress: Float?, modifier: Modifier = Modifier, color: Color
         }
     }
 }
+
+/**
+ * Ползунок в стиле приложения: толстая дорожка и круглый «бегунок».
+ * [steps] — число положений; значение — индекс положения (0 until steps).
+ * [onValueChange] вызывается при движении, [onValueChangeFinished] — когда палец отпустили.
+ */
+@Composable
+fun DuoSlider(
+    value: Int,
+    steps: Int,
+    onValueChange: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+    onValueChangeFinished: () -> Unit = {},
+    color: Color = Duo.Teal,
+) {
+    androidx.compose.material3.Slider(
+        value = value.toFloat(),
+        onValueChange = { onValueChange(it.toInt().coerceIn(0, steps - 1)) },
+        onValueChangeFinished = onValueChangeFinished,
+        valueRange = 0f..(steps - 1).toFloat(),
+        steps = (steps - 2).coerceAtLeast(0),
+        modifier = modifier.fillMaxWidth(),
+        colors = androidx.compose.material3.SliderDefaults.colors(
+            thumbColor = color,
+            activeTrackColor = color,
+            inactiveTrackColor = Duo.Track,
+            activeTickColor = Color.White.copy(alpha = 0.6f),
+            inactiveTickColor = Duo.SwitchOff,
+        ),
+    )
+}

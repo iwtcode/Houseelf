@@ -77,6 +77,16 @@ class ModelStorage(private val context: Context) {
             prefs.edit().putBoolean(KEY_THINKING, value).apply()
         }
 
+    /**
+     * Размер контекста в токенах (запрос + ответ + история), который пользователь выбрал ползунком.
+     * 0 — «авто»: размер подбирается при загрузке по свободной памяти телефона. Действует при следующей загрузке модели.
+     */
+    var contextTokens: Int
+        get() = prefs.getInt(KEY_CONTEXT_TOKENS, 0)
+        set(value) {
+            prefs.edit().putInt(KEY_CONTEXT_TOKENS, value).apply()
+        }
+
     /** Удаляет одну модель. Вызывается только по явной команде пользователя. */
     fun deleteModel(fileName: String) {
         modelFile(fileName).delete()
@@ -232,6 +242,7 @@ class ModelStorage(private val context: Context) {
         private const val KEY_AUTO_LOAD = "auto_load_on_start"
         private const val KEY_CONFIRM_ACTIONS = "confirm_actions"
         private const val KEY_THINKING = "thinking_mode"
+        private const val KEY_CONTEXT_TOKENS = "context_tokens"
         private const val KEY_DOWNLOAD_ACTIVE = "download_active"
         private const val KEY_WIFI_ONLY = "download_wifi_only"
         private const val KEY_DOWNLOAD_FILE = "download_file"

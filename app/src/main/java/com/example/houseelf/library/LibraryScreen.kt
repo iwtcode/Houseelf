@@ -54,11 +54,16 @@ fun LibraryScreen(
     totalRamBytes: Long,
     autoLoad: Boolean,
     confirmActions: Boolean,
+    contextTokens: Int,
+    loadedContextTokens: Int?,
+    loadedContextSetting: Int?,
     chatHasMessages: Boolean,
     onSelect: (String) -> Unit,
     onUnload: () -> Unit,
     onAutoLoadChange: (Boolean) -> Unit,
     onConfirmActionsChange: (Boolean) -> Unit,
+    onContextChange: (Int) -> Unit,
+    onReloadModel: () -> Unit,
     onDelete: (String) -> Unit,
     onDownload: (CatalogModel) -> Unit,
     onPickFile: () -> Unit,
@@ -156,6 +161,21 @@ fun LibraryScreen(
                             )
                         }
                     }
+                }
+            }
+
+            if (models.isNotEmpty()) {
+                item {
+                    ContextCard(
+                        models = models,
+                        activeModel = activeModel,
+                        freeRamBytes = freeRamBytes,
+                        contextTokens = contextTokens,
+                        loadedContextTokens = loadedContextTokens,
+                        loadedContextSetting = loadedContextSetting,
+                        onChange = onContextChange,
+                        onReload = onReloadModel,
+                    )
                 }
             }
 

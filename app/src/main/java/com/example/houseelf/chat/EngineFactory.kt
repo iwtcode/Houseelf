@@ -1,5 +1,6 @@
 package com.example.houseelf.chat
 
+import com.example.houseelf.library.ContextAdvisor
 import com.example.houseelf.model.ModelCatalog
 import com.example.houseelf.model.ModelProfile
 import com.example.houseelf.model.ModelStorage
@@ -13,6 +14,8 @@ internal class LoadedEngine(
     val backend: String,
     val vision: Boolean,
     val audio: Boolean,
+    /** Размер контекста, с которым поднят движок; null — как зашито в файле модели. */
+    val contextTokens: Int? = null,
 )
 
 /** Один вариант запуска: на чём считаем и какие «органы чувств» подключаем. */
@@ -23,27 +26,29 @@ private data class Mode(val gpu: Boolean, val vision: Boolean, val audio: Boolea
  *
  * Режим зависит от модели ([ModelProfile]) и от «уровня облегчения» — он растёт, если модель уже
  * упала с нехваткой памяти ([ModelStorage.degradeLevel]):
- *  - уровень 0: всё, что умеет модель; для Gemma сначала GPU, потом CPU;
+ *  - уровень 0: всё, что умеет модель; для Gemma сначала GPU, потом CPU; контекст — по ползунку или автоматически
+ *    (авто — по свободной памяти на момент загрузки, см. [ContextAdvisor.autoContext]);
  *  - уровень 1: только CPU, без звука, контекст не больше 4096 токенов;
  *  - уровень 2: только CPU и только текст, контекст 3072 токена.
  */
 internal class EngineFactory(
     private val storage: ModelStorage,
     private val cacheDir: String,
-    private val totalRamBytes: () -> Long,
+    /** Свободная оперативная память телефона прямо сейчас. */
+    private val freeRamBytes: () -> Long,
 ) {
 
     fun create(fileName: String): LoadedEngine {
         val path = storage.modelFile(fileName).absolutePath
         val profile = ModelCatalog.profileFor(fileName)
         val level = storage.degradeLevel(fileName).coerceIn(0, MAX_LEVEL)
-        val context = contextFor(profile, level)
+        val context = contextFor(fileName, profile, level)
 
         var lastError: Throwable? = null
         for (mode in modes(profile, level)) {
             try {
                 val engine = initEngine(path, mode, context)
-                return LoadedEngine(engine, if (mode.gpu) "GPU" else "CPU", mode.vision, mode.audio)
+                return LoadedEngine(engine, if (mode.gpu) "GPU" else "CPU", mode.vision, mode.audio, context)
             } catch (t: Throwable) {
                 lastError = t
             }
@@ -83,9 +88,12 @@ internal class EngineFactory(
      * «Failed to allocate tensors». Поэтому ограничиваем.
      * null — оставить как в файле (у Qwen3.5 там и так 4096).
      */
-    private fun contextFor(profile: ModelProfile, level: Int): Int? {
+    private fun contextFor(fileName: String, profile: ModelProfile, level: Int): Int? {
         if (!profile.customContext) return null
-        val base = if (totalRamBytes() >= BIG_PHONE_RAM) CONTEXT_BIG_PHONE else CONTEXT_DEFAULT
+        // Выбор пользователя (ползунок) важнее авто-подбора; при облегчении режима он всё равно урезается.
+        // Авто считаем от свободной памяти (предыдущий движок к этому моменту уже закрыт), а не от общей.
+        val base = storage.contextTokens.takeIf { it > 0 }
+            ?: ContextAdvisor.autoContext(storage.modelFile(fileName).length(), freeRamBytes())
         return when (level) {
             0 -> base
             1 -> minOf(base, CONTEXT_DEFAULT)
@@ -116,9 +124,7 @@ internal class EngineFactory(
     companion object {
         private const val MAX_LEVEL = 2
         private const val CONTEXT_DEFAULT = 4096
-        private const val CONTEXT_BIG_PHONE = 8192
         private const val CONTEXT_MIN = 3072
-        private const val BIG_PHONE_RAM = 10L * 1024 * 1024 * 1024 // Android показывает 12 ГБ как ~11
 
         /** Ошибка похожа на нехватку памяти: движок после неё лучше пересоздать в облегчённом режиме. */
         fun isResourceFailure(t: Throwable): Boolean {
