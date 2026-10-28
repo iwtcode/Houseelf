@@ -503,9 +503,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         return true
     }
 
-    /** Номер, который получит следующее сообщение: мини-чат показывает только то, что началось после него. */
-    fun peekNextMessageId(): Long = nextId
-
     /** Загрузить модель, которой пользовались в прошлый раз (или единственную). Для мини-чата без выбора из списка. */
     fun loadPreferredModel() {
         val models = storage.listModels()

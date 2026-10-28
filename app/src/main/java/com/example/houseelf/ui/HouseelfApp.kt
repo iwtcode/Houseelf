@@ -5,10 +5,8 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
-import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.ContentTransform
@@ -38,28 +36,27 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.houseelf.calendar.CALENDAR_PERMISSIONS
 import com.example.houseelf.calendar.EventStatus
-import com.example.houseelf.calendar.calendarInsertIntent
 import com.example.houseelf.calendar.calendarViewIntent
 import com.example.houseelf.calendar.hasCalendarPermission
 import com.example.houseelf.chat.ChatViewModel
 import com.example.houseelf.chat.Phase
+import com.example.houseelf.chat.ui.CalendarPermissionEffect
 import com.example.houseelf.chat.ui.ChatScreen
-import com.example.houseelf.chat.ui.EventActions
-import com.example.houseelf.chat.ui.MessageActions
+import com.example.houseelf.chat.ui.onTaskChanged
+import com.example.houseelf.chat.ui.rememberChatActions
+import com.example.houseelf.chat.ui.rememberEventActions
+import com.example.houseelf.chat.ui.rememberMessageActions
 import com.example.houseelf.library.LibraryScreen
 import com.example.houseelf.library.NetworkChoiceDialog
 import com.example.houseelf.model.CatalogModel
 import com.example.houseelf.library.ProgressScreen
 import com.example.houseelf.model.modelDisplayName
-import com.example.houseelf.today.TaskChange
 import com.example.houseelf.today.TaskEditorHost
 import com.example.houseelf.today.TaskRequest
 import com.example.houseelf.today.TodayScreen
 import com.example.houseelf.ui.screens.ErrorScreen
 import com.example.houseelf.ui.screens.LoadingScreen
 import com.example.houseelf.ui.theme.Duo
-import com.example.houseelf.util.copyText
-import com.example.houseelf.util.isActivityStarted
 
 /** Экраны, между которыми человек ходит сам. Служебные (загрузка, прогресс, ошибка) сюда не входят. */
 private enum class Dest { Today, Chat, Library }
@@ -138,39 +135,8 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel(), 
         }
     }
 
-    // Выбор изображений из галереи (системный Photo Picker, разрешения не нужны)
-    val imagePicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickMultipleVisualMedia(ChatViewModel.MAX_IMAGES)
-    ) { uris -> vm.attachImages(uris) }
-
-    // Выбор аудиофайла
-    val audioPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) vm.attachAudio(uri)
-    }
-
-    // Голосовой ввод: сначала разрешение на микрофон, потом запись
-    val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) vm.startRecording()
-        else vm.showNotice("Без доступа к микрофону голосовой ввод не работает")
-    }
-    val onMic = {
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-            vm.startRecording()
-        } else {
-            micPermission.launch(Manifest.permission.RECORD_AUDIO)
-        }
-    }
-
-    // Календарь: модель сама вносит события, поэтому разрешение запрашиваем в момент первого обращения
-    val calendarPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-        vm.onCalendarPermissionResult()
-    }
-    LaunchedEffect(state.needCalendarPermission) {
-        // Запрос показывает окно, которое сейчас на виду; второе (например, мини-чат) его не дублирует
-        if (state.needCalendarPermission && context.isActivityStarted()) {
-            if (vm.calendarPermissionRequested()) calendarPermission.launch(CALENDAR_PERMISSIONS)
-        }
-    }
+    val chatActions = rememberChatActions(vm)
+    CalendarPermissionEffect(vm, state.needCalendarPermission)
     val todayCalendarPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         calendarTick++
     }
@@ -181,24 +147,12 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel(), 
             vm.showNotice("Не найдено приложение календаря")
         }
     }
-    val eventActions = EventActions(
-        onConfirm = vm::confirmEvent,
-        onDismiss = vm::dismissEvent,
-        onOpenForm = { ev -> openIntent(calendarInsertIntent(ev)) },
-        onView = { id -> openIntent(calendarViewIntent(id)) },
+    val eventActions = rememberEventActions(
+        vm,
         onEdit = { id -> taskRequest = TaskRequest.Edit(id) },
-        onDeleteEvent = { id -> taskRequest = TaskRequest.Delete(id) },
+        onDelete = { id -> taskRequest = TaskRequest.Delete(id) },
     )
-
-    val messageActions = MessageActions(
-        onCopy = { m ->
-            context.copyText(m.text)
-            Toast.makeText(context, "Скопировано", Toast.LENGTH_SHORT).show()
-        },
-        onDelete = vm::deleteMessage,
-        onRepeat = vm::repeatLast,
-        onStop = vm::stopGenerating,
-    )
+    val messageActions = rememberMessageActions(vm)
 
     // «Назад» (кнопка в шапке и системная) всегда возвращает на «Сегодня»: пройденный путь не запоминаем.
     // Сам «Сегодня» — дом: с него системная «Назад» закрывает приложение, как обычно.
@@ -290,19 +244,9 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel(), 
             )
             AppScreen.Chat -> ChatScreen(
                 state = state,
-                onSend = vm::send,
-                onNewChat = vm::newChat,
+                actions = chatActions,
                 onOpenLibrary = vm::openLibrary,
                 onBack = goBack,
-                onPickImages = {
-                    imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                },
-                onPickAudio = { audioPicker.launch(arrayOf("audio/*")) },
-                onStartRecording = onMic,
-                onStopRecording = { vm.stopRecording(discard = false) },
-                onCancelRecording = { vm.stopRecording(discard = true) },
-                onRemoveAttachment = vm::removeAttachment,
-                onToggleThinking = { vm.setThinking(!state.thinking) },
                 eventActions = eventActions,
                 messageActions = messageActions,
             )
@@ -314,11 +258,7 @@ fun HouseelfApp(modifier: Modifier = Modifier, vm: ChatViewModel = viewModel(), 
         onClose = { taskRequest = null },
         onChanged = { change ->
             calendarTick++ // «Сегодня» перечитает календарь
-            when (change) {
-                is TaskChange.Updated -> vm.onCalendarEventEdited(change.event)
-                is TaskChange.Deleted -> vm.onCalendarEventDeleted(change.eventId)
-                is TaskChange.Created -> Unit
-            }
+            vm.onTaskChanged(change)
         },
     )
 

@@ -1,38 +1,37 @@
 package com.example.houseelf.capture
 
-import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color as AndroidColor
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.lifecycle.Lifecycle
 import com.example.houseelf.MainActivity
-import com.example.houseelf.calendar.CALENDAR_PERMISSIONS
-import com.example.houseelf.calendar.calendarInsertIntent
-import com.example.houseelf.calendar.calendarViewIntent
 import com.example.houseelf.chat.ChatViewModel
-import com.example.houseelf.chat.ui.EventActions
+import com.example.houseelf.chat.ui.CalendarPermissionEffect
+import com.example.houseelf.chat.ui.onTaskChanged
+import com.example.houseelf.chat.ui.rememberChatActions
+import com.example.houseelf.chat.ui.rememberEventActions
+import com.example.houseelf.chat.ui.rememberMessageActions
 import com.example.houseelf.media.TextOrigin
 import com.example.houseelf.sharedChatViewModel
+import com.example.houseelf.today.TaskEditorHost
+import com.example.houseelf.today.TaskRequest
 import com.example.houseelf.ui.theme.HouseelfTheme
 import com.example.houseelf.util.readClipboardText
 
 /**
  * Домовой.Чат — мини-чат поверх любого приложения. Прозрачная активити: под ней остаётся то приложение,
  * из которого пришёл текст, а пользователь не уходит из него.
+ *
+ * Это тот же чат, что и главный: общий [ChatViewModel], общая переписка и общие компоненты интерфейса.
  *
  * Сюда ведут три пути, текст везде прикрепляется к сообщению как вложение:
  *  1. пункт «Домовой» в меню выделения текста — ACTION_PROCESS_TEXT;
@@ -45,17 +44,14 @@ class CaptureActivity : ComponentActivity() {
 
     private val vm: ChatViewModel by lazy { sharedChatViewModel(application) }
 
-    /** С какого сообщения начинается этот мини-чат: предыдущая переписка в нём не показывается. */
-    private var startId by mutableLongStateOf(0L)
-
     /** В буфере обмена нет текста — подсказываем это в интерфейсе. */
     private var clipboardMissing by mutableStateOf(false)
 
     /** Читать буфер можно только с фокусом окна, поэтому чтение ждёт первого фокуса. */
     private var clipboardPending = false
 
-    /** Системное окно запроса разрешения на экране: уходить из активити в этот момент нельзя. */
-    private var permissionPending = false
+    /** Системное окно (галерея, файлы, запрос разрешения) на экране: уходить из активити в этот момент нельзя. */
+    private var systemUiOpen = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -64,55 +60,40 @@ class CaptureActivity : ComponentActivity() {
             statusBarStyle = SystemBarStyle.dark(AndroidColor.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.light(AndroidColor.TRANSPARENT, AndroidColor.TRANSPARENT),
         )
-        if (savedInstanceState == null) {
-            startId = vm.peekNextMessageId()
-            handleIntent(intent)
-        } else {
-            // Поворот экрана: текст уже лежит во ViewModel, повторно его брать не нужно
-            startId = savedInstanceState.getLong(KEY_START_ID, vm.peekNextMessageId())
-        }
+        // Поворот экрана: текст уже лежит во ViewModel, повторно его брать не нужно
+        if (savedInstanceState == null) handleIntent(intent)
 
         setContent {
             HouseelfTheme {
                 val state by vm.state.collectAsState()
+                val onSystemUi = { open: Boolean -> systemUiOpen = open }
+                var taskRequest by remember { mutableStateOf<TaskRequest?>(null) }
 
-                // Календарь: модель может попросить доступ прямо из мини-чата
-                val permissionLauncher = rememberLauncherForActivityResult(
-                    ActivityResultContracts.RequestMultiplePermissions(),
-                ) {
-                    permissionPending = false
-                    vm.onCalendarPermissionResult()
-                }
-                LaunchedEffect(state.needCalendarPermission) {
-                    if (state.needCalendarPermission && lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
-                        if (vm.calendarPermissionRequested()) {
-                            permissionPending = true
-                            permissionLauncher.launch(CALENDAR_PERMISSIONS)
-                        }
-                    }
-                }
-
-                val eventActions = remember {
-                    EventActions(
-                        onConfirm = vm::confirmEvent,
-                        onDismiss = vm::dismissEvent,
-                        onOpenForm = { ev -> openExternal(calendarInsertIntent(ev)) },
-                        onView = { id -> openExternal(calendarViewIntent(id)) },
-                    )
-                }
+                CalendarPermissionEffect(vm, state.needCalendarPermission, onSystemUi)
 
                 CaptureOverlay(
                     state = state,
-                    startId = startId,
                     clipboardMissing = clipboardMissing,
-                    onSend = vm::send,
-                    onRemoveAttachment = vm::removeAttachment,
-                    onPaste = { readClipboard() },
-                    onOpenApp = { openApp() },
-                    onClose = { finish() },
-                    onLoadModel = vm::loadPreferredModel,
-                    onRetry = vm::retryLoad,
-                    eventActions = eventActions,
+                    actions = rememberChatActions(vm, onSystemUi),
+                    messageActions = rememberMessageActions(vm),
+                    eventActions = rememberEventActions(
+                        vm,
+                        onEdit = { id -> taskRequest = TaskRequest.Edit(id) },
+                        onDelete = { id -> taskRequest = TaskRequest.Delete(id) },
+                    ),
+                    overlayActions = OverlayActions(
+                        onPaste = ::readClipboard,
+                        onOpenApp = ::openApp,
+                        onClose = ::finish,
+                        onLoadModel = vm::loadPreferredModel,
+                        onRetry = vm::retryLoad,
+                    ),
+                )
+
+                TaskEditorHost(
+                    request = taskRequest,
+                    onClose = { taskRequest = null },
+                    onChanged = vm::onTaskChanged,
                 )
             }
         }
@@ -121,14 +102,7 @@ class CaptureActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        // Новый захват начинает новый мини-чат, но не обрывает ответ, который ещё пишется
-        if (!vm.state.value.generating) startId = vm.peekNextMessageId()
         handleIntent(intent)
-    }
-
-    override fun onSaveInstanceState(outState: Bundle) {
-        super.onSaveInstanceState(outState)
-        outState.putLong(KEY_START_ID, startId)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -142,8 +116,11 @@ class CaptureActivity : ComponentActivity() {
     override fun onStop() {
         super.onStop()
         // Мини-чат живёт, пока на виду. Ушли на главный экран или выключили экран — закрываем.
-        // Ответ, который ещё пишется, продолжается во ViewModel и появится в главном чате.
-        if (!isChangingConfigurations && !isFinishing && !permissionPending) finish()
+        // Ответ, который ещё пишется, продолжается во ViewModel и виден в главном чате.
+        if (isChangingConfigurations || systemUiOpen) return
+        // В фоне Android глушит микрофон: сохраняем то, что успели записать
+        vm.stopRecording(discard = false)
+        if (!isFinishing) finish()
     }
 
     // ───────── Приём данных ─────────
@@ -202,19 +179,9 @@ class CaptureActivity : ComponentActivity() {
         finish()
     }
 
-    private fun openExternal(intent: Intent) {
-        try {
-            startActivity(intent)
-        } catch (_: ActivityNotFoundException) {
-            vm.showNotice("Не найдено приложение календаря")
-        }
-    }
-
     companion object {
         /** Третий способ: взять текст из буфера обмена. Плитка, ярлык и виджет запускают активити с этим действием. */
         const val ACTION_CAPTURE_CLIPBOARD = "com.example.houseelf.action.CAPTURE_CLIPBOARD"
-
-        private const val KEY_START_ID = "start_id"
 
         fun clipboardIntent(context: Context): Intent =
             Intent(context, CaptureActivity::class.java)
