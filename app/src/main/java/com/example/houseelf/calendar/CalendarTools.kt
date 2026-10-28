@@ -80,6 +80,18 @@ class CalendarTools(
         @ToolParam(description = "Place of the event, if mentioned") location: String? = null,
         @ToolParam(description = "true only if the user said the event lasts all day. Leave false otherwise; ignored when a time is given") allDay: Boolean = false,
     ): Map<String, Any> {
+        // «Сдать до пятницы 18:00»: модель часто кладёт это в endDate/endTime, а начало не заполняет —
+        // тогда событие вышло бы «сегодня на весь день». Срок без начала — это и есть время события.
+        var date = date
+        var time = time
+        var endDate = endDate
+        var endTime = endTime
+        if (date.isNullOrBlank() && time.isNullOrBlank() && (!endDate.isNullOrBlank() || !endTime.isNullOrBlank())) {
+            date = endDate
+            time = endTime
+            endDate = null
+            endTime = null
+        }
         return try {
             // Если модель сложила детали в название («Поход в магазин: купить молоко») и пропустила notes — разделяем сами
             val (cleanTitle, cleanNotes) = separateNotes(title, notes)
